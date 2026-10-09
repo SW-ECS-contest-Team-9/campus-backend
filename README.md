@@ -25,6 +25,8 @@ SQLAlchemy와 Alembic은 의존성에 등록되어 있으나, 현재 DB 연결�
 
 ## 브랜치와 PR
 
+![브랜치 전략](docs/images/branch-strategy.svg)
+
 - `main`: 배포용. 일반 변경은 PR로 병합.
 - `develop`: 개발 통합용.
 - `feature/*`, `docs/*`, `refactoring/*`, `fix/*`, `chore/*`: `develop`에서 분기 → 작업·검증 → PR → `develop` 병합.
