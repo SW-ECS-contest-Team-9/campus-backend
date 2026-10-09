@@ -1,6 +1,6 @@
 # Campus Backend
 
-Campus Tracker의 백엔드를 공부하고 설계하기 위한 Python/FastAPI 프로젝트입니다. 운영 중인 TypeScript/Express 기반 `campus-tracker` 저장소와 별개입니다.
+Campus Tracker 서비스의 백엔드를 구축하는 Python/FastAPI 프로젝트입니다. 현재는 초기 구현 단계이며 API와 데이터 구조를 개발하고 있습니다. 기존 TypeScript/Express 기반 `campus-tracker` 서버와의 연계 및 역할 분담은 설계 중입니다.
 
 ## 현재 상태
 
@@ -61,7 +61,7 @@ compose.yaml              PostgreSQL·Redis 설정
 .github/workflows/ci.yml   CI
 ```
 
-Redis 설정의 `everysec` 앞에 `--appendfsync`가 누락되어 있어 수정·실행 확인이 필요합니다. PostgreSQL 연결 학습은 `postgres` 서비스만 실행하여 진행할 수 있습니다.
+Redis 설정의 `everysec` 앞에 `--appendfsync`가 누락되어 있어 수정·실행 확인이 필요합니다. PostgreSQL 연결 확인은 `postgres` 서비스만 실행하여 진행할 수 있습니다.
 
 ## 브랜치와 PR
 
