@@ -3,7 +3,6 @@ param(
     [Parameter(Position = 0)][string]$Task = "help",
     [Parameter(ValueFromRemainingArguments = $true)][string[]]$Rest
 )
-$ErrorActionPreference = "Stop"
 Set-Location (Split-Path $PSScriptRoot -Parent)
 
 function Invoke-Step([string]$Exe, [string[]]$ArgList) {
