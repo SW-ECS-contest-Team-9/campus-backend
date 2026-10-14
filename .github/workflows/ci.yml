@@ -25,4 +25,4 @@ jobs:
         run: uv sync --locked
 
       - name: Python 문법 검사
-        run: uv run python -m compileall main.py database.py routers
+        run: uv run python -m compileall main.py database.py errors.py routers mapdata scripts
