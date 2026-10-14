@@ -36,4 +36,3 @@ known-first-party = ["database", "errors", "main", "mapdata", "routers", "confte
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
