@@ -11,6 +11,30 @@ jobs:
   check:
     runs-on: ubuntu-latest
 
+    # CI 전용 일회성 DB. 기본 계정만 쓰며 비밀값 아님.
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: campus_tracking
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+
+    env:
+      POSTGRES_HOST: 127.0.0.1
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: campus_tracking
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_TEST_DB: campus_test
+
     steps:
       - name: 저장소 코드 가져오기
         uses: actions/checkout@v7
@@ -26,3 +50,14 @@ jobs:
 
       - name: Python 문법 검사
         run: uv run python -m compileall main.py database.py errors.py routers mapdata scripts
+
+      - name: ruff 검사
+        run: |
+          uv run ruff check --output-format=github .
+          uv run ruff format --check .
+
+      - name: 마이그레이션
+        run: uv run alembic upgrade head
+
+      - name: 테스트
+        run: uv run pytest -q
