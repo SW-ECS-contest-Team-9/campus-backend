@@ -9,6 +9,7 @@
   open_areas: [{id, name, kind, elevation_m, polygon: [[x,y],...]}]
   meta:       {...}
 """
+
 import json
 import struct
 import urllib.request
@@ -18,6 +19,7 @@ NULL = "\\N"
 
 
 # ---------- SQL 내보내기 ----------
+
 
 def read_copy_tables(path: str) -> dict[str, list[dict]]:
     tables: dict[str, list[dict]] = {}
@@ -115,33 +117,63 @@ def load_export(path: str) -> dict:
         if (r.get("status") or "").upper() in ("REPLACED", "RETIRED"):
             continue
         _, coords = parse_ewkb(r["geom"])
-        roads.append({
-            "id": r["id"], "name": r["name"], "road_class": r["road_class"], "structure": r["structure"],
-            "pedestrian_access": r["pedestrian_access"], "direction": r["pedestrian_direction"],
-            "wheelchair_access": r["wheelchair_access"],
-            "width_m": float(r["width_m"]) if r["width_m"] else None,
-            "building_id": r["building_id"], "level_id": r["level_id"],
-            "from_node": r["from_node_id"], "to_node": r["to_node_id"], "coords": coords,
-        })
+        roads.append(
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "road_class": r["road_class"],
+                "structure": r["structure"],
+                "pedestrian_access": r["pedestrian_access"],
+                "direction": r["pedestrian_direction"],
+                "wheelchair_access": r["wheelchair_access"],
+                "width_m": float(r["width_m"]) if r["width_m"] else None,
+                "building_id": r["building_id"],
+                "level_id": r["level_id"],
+                "from_node": r["from_node_id"],
+                "to_node": r["to_node_id"],
+                "coords": coords,
+            }
+        )
     places = []
     for p in t.get("mobility.places", []):
         if (p.get("status") or "").upper() in ("REPLACED", "RETIRED"):
             continue
         _, c = parse_ewkb(p["geom"])
-        places.append({"id": p["id"], "name": p["name"], "category": p["category"],
-                       "building_id": p["building_id"], "level_id": p["level_id"], "coords": c})
+        places.append(
+            {
+                "id": p["id"],
+                "name": p["name"],
+                "category": p["category"],
+                "building_id": p["building_id"],
+                "level_id": p["level_id"],
+                "coords": c,
+            }
+        )
     areas = []
     for a in t.get("mobility.open_areas", []):
         ring = _outer_ring(parse_ewkb(a["geom"]))
-        areas.append({"id": a["id"], "name": a["name"], "kind": a["kind"],
-                      "elevation_m": float(a["elevation_m"]) if a["elevation_m"] else None,
-                      "polygon": [[p[0], p[1]] for p in ring]})
+        areas.append(
+            {
+                "id": a["id"],
+                "name": a["name"],
+                "kind": a["kind"],
+                "elevation_m": float(a["elevation_m"]) if a["elevation_m"] else None,
+                "polygon": [[p[0], p[1]] for p in ring],
+            }
+        )
     node_levels = {n["id"]: n["level_id"] for n in t.get("mobility.network_nodes", []) if n["level_id"]}
-    return {"roads": roads, "places": places, "buildings": [], "open_areas": areas,
-            "node_levels": node_levels, "meta": {"export": path}}
+    return {
+        "roads": roads,
+        "places": places,
+        "buildings": [],
+        "open_areas": areas,
+        "node_levels": node_levels,
+        "meta": {"export": path},
+    }
 
 
 # ---------- 시험 서버 읽기 API ----------
+
 
 def _get(url: str):
     with urllib.request.urlopen(url, timeout=20) as r:
@@ -167,29 +199,61 @@ def load_api(base: str, export_path: str | None = None) -> dict:
         seen.add(r["id"])
         e = ex_roads.get(r["id"])
         enriched += e is not None
-        roads.append({
-            "id": r["id"], "name": r["name"], "road_class": r["roadClass"], "structure": r["structure"],
-            "pedestrian_access": e["pedestrian_access"] if e else None,
-            "direction": e["direction"] if e else None,
-            "wheelchair_access": e["wheelchair_access"] if e else None,
-            "width_m": r["widthM"], "building_id": r["buildingId"], "level_id": r["levelId"],
-            "from_node": r["fromNodeId"], "to_node": r["toNodeId"], "coords": r["geometry"]["coordinates"],
-        })
-    places = [{"id": p["id"], "name": p["name"], "category": p["category"], "building_id": p["buildingId"],
-               "level_id": p["levelId"], "coords": p["geometry"]["coordinates"]} for p in places_raw]
+        roads.append(
+            {
+                "id": r["id"],
+                "name": r["name"],
+                "road_class": r["roadClass"],
+                "structure": r["structure"],
+                "pedestrian_access": e["pedestrian_access"] if e else None,
+                "direction": e["direction"] if e else None,
+                "wheelchair_access": e["wheelchair_access"] if e else None,
+                "width_m": r["widthM"],
+                "building_id": r["buildingId"],
+                "level_id": r["levelId"],
+                "from_node": r["fromNodeId"],
+                "to_node": r["toNodeId"],
+                "coords": r["geometry"]["coordinates"],
+            }
+        )
+    places = [
+        {
+            "id": p["id"],
+            "name": p["name"],
+            "category": p["category"],
+            "building_id": p["buildingId"],
+            "level_id": p["levelId"],
+            "coords": p["geometry"]["coordinates"],
+        }
+        for p in places_raw
+    ]
     buildings = []
     for b in scene["buildings"]:
         g = b["geometry"]
         polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
         win = (b.get("appearance") or {}).get("windows") or {}
-        buildings.append({"id": b["buildingId"], "name": b.get("name"), "ground_floors": b.get("groundFloors"),
-                          "rings_lonlat": [p[0] for p in polys],
-                          "floor_names": win.get("floorNames"), "floors_m": win.get("floorsM")})
+        buildings.append(
+            {
+                "id": b["buildingId"],
+                "name": b.get("name"),
+                "ground_floors": b.get("groundFloors"),
+                "rings_lonlat": [p[0] for p in polys],
+                "floor_names": win.get("floorNames"),
+                "floors_m": win.get("floorsM"),
+            }
+        )
     return {
-        "roads": roads, "places": places, "buildings": buildings,
+        "roads": roads,
+        "places": places,
+        "buildings": buildings,
         "open_areas": ex["open_areas"] if ex else [],
         "node_levels": ex["node_levels"] if ex else {},
-        "meta": {"api": base, "scene": scene.get("id"), "mapVersionId": scene.get("mapVersionId"),
-                 "export": export_path, "exportMatchedRoads": enriched,
-                 "fetchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+        "meta": {
+            "api": base,
+            "scene": scene.get("id"),
+            "mapVersionId": scene.get("mapVersionId"),
+            "export": export_path,
+            "exportMatchedRoads": enriched,
+            "fetchedAt": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        },
     }

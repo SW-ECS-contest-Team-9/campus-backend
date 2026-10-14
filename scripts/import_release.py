@@ -5,6 +5,7 @@
   uv run python scripts/import_release.py --export C:/Users/ssant/campus-mobility-20261012c.sql
   uv run python scripts/import_release.py --publish-id 3
 """
+
 import argparse
 import json
 import sys
@@ -42,12 +43,17 @@ def main(argv=None) -> int:
         conn.commit()
         pkg = release.build_package(conn, rid)
         v = release.validate(pkg)
-        out = {"releaseId": rid, "counts": rep["counts"],
-               "fixed": {k: len(x) for k, x in rep["fixed"].items()},
-               "unfixed": rep["unfixed"], "validation": v}
+        out = {
+            "releaseId": rid,
+            "counts": rep["counts"],
+            "fixed": {k: len(x) for k, x in rep["fixed"].items()},
+            "unfixed": rep["unfixed"],
+            "validation": v,
+        }
         if a.report:
-            Path(a.report).write_text(json.dumps({**out, "fixedDetail": rep["fixed"]}, ensure_ascii=False, indent=1),
-                                      encoding="utf8")
+            Path(a.report).write_text(
+                json.dumps({**out, "fixedDetail": rep["fixed"]}, ensure_ascii=False, indent=1), encoding="utf8"
+            )
         if a.publish:
             out["published"] = release.publish(conn, rid) if not v["errors"] else "검증 오류로 공개 안 함"
         print(json.dumps(out, ensure_ascii=False, indent=1))

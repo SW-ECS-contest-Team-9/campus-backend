@@ -6,6 +6,7 @@ Revision ID: 0001_map_schema
 Revises:
 Create Date: 2026-10-15
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa

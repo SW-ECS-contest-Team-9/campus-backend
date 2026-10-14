@@ -1,4 +1,5 @@
 """릴리스 DB 쓰기·검증·꾸러미 만들기·공개."""
+
 import hashlib
 import json
 import os
@@ -30,16 +31,19 @@ def ensure_campus(conn) -> int:
     row = conn.execute("SELECT id FROM campus WHERE code = %s", (CAMPUS["code"],)).fetchone()
     if row:
         return row["id"]
-    return conn.execute("INSERT INTO campus (code, name, crs) VALUES (%s, %s, %s) RETURNING id",
-                        (CAMPUS["code"], CAMPUS["name"], CAMPUS["crs"])).fetchone()["id"]
+    return conn.execute(
+        "INSERT INTO campus (code, name, crs) VALUES (%s, %s, %s) RETURNING id",
+        (CAMPUS["code"], CAMPUS["name"], CAMPUS["crs"]),
+    ).fetchone()["id"]
 
 
 def create_draft(conn, content: dict, report: dict, source: dict) -> int:
     """content(transform.build 결과)를 새 draft 릴리스로 넣는다. 한 트랜잭션."""
     with conn.transaction():
         campus_id = ensure_campus(conn)
-        version = conn.execute("SELECT COALESCE(MAX(version), 0) + 1 AS v FROM map_release WHERE campus_id = %s",
-                               (campus_id,)).fetchone()["v"]
+        version = conn.execute(
+            "SELECT COALESCE(MAX(version), 0) + 1 AS v FROM map_release WHERE campus_id = %s", (campus_id,)
+        ).fetchone()["v"]
         rid = conn.execute(
             "INSERT INTO map_release (campus_id, version, schema_version, source) VALUES (%s, %s, %s, %s) RETURNING id",
             (campus_id, version, SCHEMA_VERSION, Jsonb({**source, "importReport": report})),
@@ -49,9 +53,17 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
             bid[b["key"]] = conn.execute(
                 "INSERT INTO building (release_id, key, name, aliases, ground_floors, underground_floors, center_x, center_y, footprint)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (rid, b["key"], b["name"], b["aliases"], b.get("_ground"), b.get("_under"),
-                 b["center"][0] if b["center"] else None, b["center"][1] if b["center"] else None,
-                 Jsonb(b["footprint"]) if b["footprint"] else None),
+                (
+                    rid,
+                    b["key"],
+                    b["name"],
+                    b["aliases"],
+                    b.get("_ground"),
+                    b.get("_under"),
+                    b["center"][0] if b["center"] else None,
+                    b["center"][1] if b["center"] else None,
+                    Jsonb(b["footprint"]) if b["footprint"] else None,
+                ),
             ).fetchone()["id"]
         for f in content["floors"]:
             fid[f["key"]] = conn.execute(
@@ -63,38 +75,91 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
             nid[n["key"]] = conn.execute(
                 "INSERT INTO node (release_id, key, location, building_id, floor_id, kind, x, y, z, estimated)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (rid, n["key"], n["location"], bid.get(n["buildingKey"]), fid.get(n["floorKey"]), n["kind"],
-                 n["x"], n["y"], n["z"], n["estimated"]),
+                (
+                    rid,
+                    n["key"],
+                    n["location"],
+                    bid.get(n["buildingKey"]),
+                    fid.get(n["floorKey"]),
+                    n["kind"],
+                    n["x"],
+                    n["y"],
+                    n["z"],
+                    n["estimated"],
+                ),
             ).fetchone()["id"]
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO edge (release_id, key, from_node_id, to_node_id, name, kind, direction, pedestrian_access,"
                 " wheelchair_access, length_m, step_count, width_m, geometry, estimated)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [(rid, e["key"], nid[e["from"]], nid[e["to"]], e["name"], e["kind"], e["direction"],
-                  e["pedestrianAccess"], e["wheelchairAccess"], e["lengthM"], e["stepCount"], e["widthM"],
-                  Jsonb(e["geometry"]), e["estimated"]) for e in content["edges"]],
+                [
+                    (
+                        rid,
+                        e["key"],
+                        nid[e["from"]],
+                        nid[e["to"]],
+                        e["name"],
+                        e["kind"],
+                        e["direction"],
+                        e["pedestrianAccess"],
+                        e["wheelchairAccess"],
+                        e["lengthM"],
+                        e["stepCount"],
+                        e["widthM"],
+                        Jsonb(e["geometry"]),
+                        e["estimated"],
+                    )
+                    for e in content["edges"]
+                ],
             )
             cur.executemany(
                 "INSERT INTO place (release_id, key, location, building_id, floor_id, node_id, name, aliases, category, x, y, z)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
-                [(rid, p["key"], p["location"], bid.get(p["buildingKey"]), fid.get(p["floorKey"]), nid.get(p["nodeKey"]),
-                  p["name"], p["aliases"], p["category"], p["x"], p["y"], p["z"]) for p in content["places"]],
+                [
+                    (
+                        rid,
+                        p["key"],
+                        p["location"],
+                        bid.get(p["buildingKey"]),
+                        fid.get(p["floorKey"]),
+                        nid.get(p["nodeKey"]),
+                        p["name"],
+                        p["aliases"],
+                        p["category"],
+                        p["x"],
+                        p["y"],
+                        p["z"],
+                    )
+                    for p in content["places"]
+                ],
             )
         for a in content["walkAreas"]:
             aid[a["key"]] = conn.execute(
                 "INSERT INTO walk_area (release_id, key, location, floor_id, name, kind, polygon, z_m, estimated)"
                 " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
-                (rid, a["key"], a["location"], fid.get(a["floorKey"]), a["name"], a["kind"], Jsonb(a["polygon"]),
-                 a["z"], a["estimated"]),
+                (
+                    rid,
+                    a["key"],
+                    a["location"],
+                    fid.get(a["floorKey"]),
+                    a["name"],
+                    a["kind"],
+                    Jsonb(a["polygon"]),
+                    a["z"],
+                    a["estimated"],
+                ),
             ).fetchone()["id"]
         with conn.cursor() as cur:
-            cur.executemany("INSERT INTO walk_area_node (area_id, node_id) VALUES (%s, %s)",
-                            [(aid[w["areaKey"]], nid[w["nodeKey"]]) for w in content["walkAreaNodes"]])
+            cur.executemany(
+                "INSERT INTO walk_area_node (area_id, node_id) VALUES (%s, %s)",
+                [(aid[w["areaKey"]], nid[w["nodeKey"]]) for w in content["walkAreaNodes"]],
+            )
     return rid
 
 
 # ---------- DB → 꾸러미 ----------
+
 
 def _f(v):
     return None if v is None else float(v)
@@ -110,38 +175,103 @@ def build_package(conn, rid: int) -> dict:
     src = rel["source"] or {}
     pkg = {
         "schemaVersion": rel["schema_version"],
-        "release": {"version": rel["version"],
-                    "createdAt": rel["created_at"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "source": src.get("label", "campus-tracker")},
+        "release": {
+            "version": rel["version"],
+            "createdAt": rel["created_at"].astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "source": src.get("label", "campus-tracker"),
+        },
         "campus": dict(CAMPUS),
-        "buildings": [{"key": r["key"], "name": r["name"], "aliases": list(r["aliases"]),
-                       "center": [_f(r["center_x"]), _f(r["center_y"])] if r["center_x"] is not None else None,
-                       "footprint": r["footprint"]}
-                      for r in q("SELECT * FROM building WHERE release_id = %s ORDER BY key")],
-        "floors": [{"key": r["key"], "buildingKey": bk[r["building_id"]], "code": r["code"], "sortOrder": r["sort_order"],
-                    "floorZ": _f(r["floor_z_m"]), "zEstimated": r["z_estimated"]}
-                   for r in q("SELECT * FROM floor WHERE release_id = %s ORDER BY key")],
-        "nodes": [{"key": r["key"], "location": r["location"], "buildingKey": bk.get(r["building_id"]),
-                   "floorKey": fk.get(r["floor_id"]), "kind": r["kind"], "x": _f(r["x"]), "y": _f(r["y"]),
-                   "z": _f(r["z"]), "estimated": r["estimated"]}
-                  for r in q("SELECT * FROM node WHERE release_id = %s ORDER BY key")],
-        "edges": [{"key": r["key"], "from": nk[r["from_node_id"]], "to": nk[r["to_node_id"]], "name": r["name"],
-                   "kind": r["kind"], "direction": r["direction"], "pedestrianAccess": r["pedestrian_access"],
-                   "wheelchairAccess": r["wheelchair_access"], "lengthM": _f(r["length_m"]), "stepCount": r["step_count"],
-                   "widthM": _f(r["width_m"]), "geometry": r["geometry"], "estimated": r["estimated"]}
-                  for r in q("SELECT * FROM edge WHERE release_id = %s ORDER BY key")],
-        "places": [{"key": r["key"], "location": r["location"], "buildingKey": bk.get(r["building_id"]),
-                    "floorKey": fk.get(r["floor_id"]), "nodeKey": nk.get(r["node_id"]), "name": r["name"],
-                    "aliases": list(r["aliases"]), "category": r["category"], "x": _f(r["x"]), "y": _f(r["y"]),
-                    "z": _f(r["z"])}
-                   for r in q("SELECT * FROM place WHERE release_id = %s ORDER BY key")],
-        "walkAreas": [{"key": r["key"], "location": r["location"], "floorKey": fk.get(r["floor_id"]), "name": r["name"],
-                       "kind": r["kind"], "polygon": r["polygon"], "z": _f(r["z_m"]), "estimated": r["estimated"]}
-                      for r in q("SELECT * FROM walk_area WHERE release_id = %s ORDER BY key")],
+        "buildings": [
+            {
+                "key": r["key"],
+                "name": r["name"],
+                "aliases": list(r["aliases"]),
+                "center": [_f(r["center_x"]), _f(r["center_y"])] if r["center_x"] is not None else None,
+                "footprint": r["footprint"],
+            }
+            for r in q("SELECT * FROM building WHERE release_id = %s ORDER BY key")
+        ],
+        "floors": [
+            {
+                "key": r["key"],
+                "buildingKey": bk[r["building_id"]],
+                "code": r["code"],
+                "sortOrder": r["sort_order"],
+                "floorZ": _f(r["floor_z_m"]),
+                "zEstimated": r["z_estimated"],
+            }
+            for r in q("SELECT * FROM floor WHERE release_id = %s ORDER BY key")
+        ],
+        "nodes": [
+            {
+                "key": r["key"],
+                "location": r["location"],
+                "buildingKey": bk.get(r["building_id"]),
+                "floorKey": fk.get(r["floor_id"]),
+                "kind": r["kind"],
+                "x": _f(r["x"]),
+                "y": _f(r["y"]),
+                "z": _f(r["z"]),
+                "estimated": r["estimated"],
+            }
+            for r in q("SELECT * FROM node WHERE release_id = %s ORDER BY key")
+        ],
+        "edges": [
+            {
+                "key": r["key"],
+                "from": nk[r["from_node_id"]],
+                "to": nk[r["to_node_id"]],
+                "name": r["name"],
+                "kind": r["kind"],
+                "direction": r["direction"],
+                "pedestrianAccess": r["pedestrian_access"],
+                "wheelchairAccess": r["wheelchair_access"],
+                "lengthM": _f(r["length_m"]),
+                "stepCount": r["step_count"],
+                "widthM": _f(r["width_m"]),
+                "geometry": r["geometry"],
+                "estimated": r["estimated"],
+            }
+            for r in q("SELECT * FROM edge WHERE release_id = %s ORDER BY key")
+        ],
+        "places": [
+            {
+                "key": r["key"],
+                "location": r["location"],
+                "buildingKey": bk.get(r["building_id"]),
+                "floorKey": fk.get(r["floor_id"]),
+                "nodeKey": nk.get(r["node_id"]),
+                "name": r["name"],
+                "aliases": list(r["aliases"]),
+                "category": r["category"],
+                "x": _f(r["x"]),
+                "y": _f(r["y"]),
+                "z": _f(r["z"]),
+            }
+            for r in q("SELECT * FROM place WHERE release_id = %s ORDER BY key")
+        ],
+        "walkAreas": [
+            {
+                "key": r["key"],
+                "location": r["location"],
+                "floorKey": fk.get(r["floor_id"]),
+                "name": r["name"],
+                "kind": r["kind"],
+                "polygon": r["polygon"],
+                "z": _f(r["z_m"]),
+                "estimated": r["estimated"],
+            }
+            for r in q("SELECT * FROM walk_area WHERE release_id = %s ORDER BY key")
+        ],
         "walkAreaNodes": sorted(
-            ({"areaKey": ak[r["area_id"]], "nodeKey": nk[r["node_id"]]} for r in q(
-                "SELECT wan.* FROM walk_area_node wan JOIN walk_area a ON a.id = wan.area_id WHERE a.release_id = %s")),
-            key=lambda w: (w["areaKey"], w["nodeKey"])),
+            (
+                {"areaKey": ak[r["area_id"]], "nodeKey": nk[r["node_id"]]}
+                for r in q(
+                    "SELECT wan.* FROM walk_area_node wan JOIN walk_area a ON a.id = wan.area_id WHERE a.release_id = %s"
+                )
+            ),
+            key=lambda w: (w["areaKey"], w["nodeKey"]),
+        ),
     }
     return pkg
 
@@ -178,11 +308,19 @@ def validate(pkg: dict) -> dict:
             errors.append(f"선 점 2개 미만: {e['key']}")
         if e["kind"] not in EDGE_KINDS:
             errors.append(f"길 종류 값: {e['key']} {e['kind']}")
-        if (a["location"] == "indoor" or b["location"] == "indoor") and e["kind"] not in VERTICAL and (
-                (a["location"] == "indoor" and not a["floorKey"]) or (b["location"] == "indoor" and not b["floorKey"])):
+        if (
+            (a["location"] == "indoor" or b["location"] == "indoor")
+            and e["kind"] not in VERTICAL
+            and ((a["location"] == "indoor" and not a["floorKey"]) or (b["location"] == "indoor" and not b["floorKey"]))
+        ):
             indoor_no_floor.append(e["key"])
-        if a["floorKey"] and b["floorKey"] and a["floorKey"] != b["floorKey"] \
-                and a["buildingKey"] == b["buildingKey"] and e["kind"] not in VERTICAL:
+        if (
+            a["floorKey"]
+            and b["floorKey"]
+            and a["floorKey"] != b["floorKey"]
+            and a["buildingKey"] == b["buildingKey"]
+            and e["kind"] not in VERTICAL
+        ):
             cross.append(f"{e['key']} {floors[a['floorKey']]['code']}→{floors[b['floorKey']]['code']} ({e['kind']})")
         adj[e["from"]].add(e["to"])
         adj[e["to"]].add(e["from"])
@@ -242,5 +380,11 @@ def publish(conn, rid: int) -> dict:
             " published_at = %s, source = source || %s WHERE id = %s",
             (str(path), len(body), sha, now, Jsonb({"validation": v}), rid),
         )
-    return {"id": rid, "version": rel["version"], "sha256": sha, "sizeBytes": len(body), "path": str(path),
-            "validation": v}
+    return {
+        "id": rid,
+        "version": rel["version"],
+        "sha256": sha,
+        "sizeBytes": len(body),
+        "path": str(path),
+        "validation": v,
+    }

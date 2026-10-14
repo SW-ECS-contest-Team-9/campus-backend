@@ -1,4 +1,5 @@
 """실제 Postgres(compose 의 postgres)에 시험용 DB 를 만들어 쓴다."""
+
 import os
 import sys
 from pathlib import Path
@@ -47,6 +48,7 @@ def conn():
 @pytest.fixture
 def clean(conn):
     from mapdata import store
+
     conn.execute("TRUNCATE campus RESTART IDENTITY CASCADE")
     conn.commit()
     store.clear()

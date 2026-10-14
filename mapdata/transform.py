@@ -2,6 +2,7 @@
 
 자료 보정은 모두 여기서 하고, 고친 것·못 고친 것을 report 에 남긴다.
 """
+
 import math
 import re
 from collections import Counter, defaultdict
@@ -12,12 +13,23 @@ PLACE_RADIUS_M = 25.0  # 장소-노드 평면 거리 한도
 COORD_TOL_M = 0.05
 
 KIND_BY_STRUCTURE = {
-    "indoor_corridor": "corridor", "stairs": "stairs", "elevator": "elevator", "ramp": "ramp",
-    "sidewalk": "sidewalk", "crossing": "crossing",
+    "indoor_corridor": "corridor",
+    "stairs": "stairs",
+    "elevator": "elevator",
+    "ramp": "ramp",
+    "sidewalk": "sidewalk",
+    "crossing": "crossing",
 }
 VERTICAL_KINDS = {"stairs", "elevator", "ramp"}
-CATEGORY = {"building_entrance": "entrance", "entrance": "entrance", "facility": "facility",
-            "landmark": "landmark", "parking": "parking", "bus_stop": "bus_stop", "room": "room"}
+CATEGORY = {
+    "building_entrance": "entrance",
+    "entrance": "entrance",
+    "facility": "facility",
+    "landmark": "landmark",
+    "parking": "parking",
+    "bus_stop": "bus_stop",
+    "room": "room",
+}
 AREA_KIND = {"plaza": "plaza", "parking": "parking_aisle", "parking_aisle": "parking_aisle", "field": "field"}
 
 
@@ -75,6 +87,7 @@ def point_in_poly(x, y, poly) -> bool:
 
 def _to_5186():
     from pyproj import Transformer
+
     return Transformer.from_crs(4326, 5186, always_xy=True)
 
 
@@ -91,7 +104,9 @@ def build(src: dict) -> tuple[dict, dict]:
         bid = b["id"]
         if "#" in bid:
             base = bid.split("#")[0]
-        elif bid.startswith("추가-"):  # 덧붙인 부분: 이름 첫 낱말이 다른 건물 이름이면 그 건물 (상승관 동쪽 끝 → 상승관)
+        elif bid.startswith(
+            "추가-"
+        ):  # 덧붙인 부분: 이름 첫 낱말이 다른 건물 이름이면 그 건물 (상승관 동쪽 끝 → 상승관)
             name = b.get("name") or bid.removeprefix("추가-")
             first = name.split()[0]
             base = first if first != name and first in names else name
@@ -115,7 +130,11 @@ def build(src: dict) -> tuple[dict, dict]:
                     pts = pts[:-1]
                 rings.append(pts)
         foot = max(rings, key=ring_area) if rings else None
-        center = [round(sum(p[0] for p in foot) / len(foot), 2), round(sum(p[1] for p in foot) / len(foot), 2)] if foot else None
+        center = (
+            [round(sum(p[0] for p in foot) / len(foot), 2), round(sum(p[1] for p in foot) / len(foot), 2)]
+            if foot
+            else None
+        )
         key = f"b:{name}"
         aliases = sorted({p["name"] for p in parts if p.get("name") and p["name"] != name})
         withnames = next((p for p in [main] + parts if p.get("floor_names") and p.get("floors_m")), None)
@@ -127,8 +146,14 @@ def build(src: dict) -> tuple[dict, dict]:
                     unf("floor_name_unparsed", f"{name}: {fname}")
                     continue
                 codes.append(code)
-                f = {"key": f"f:{name}:{code}", "buildingKey": key, "code": code, "sortOrder": sort_order(code),
-                     "floorZ": round(float(z), 2) if z is not None else None, "zEstimated": True}
+                f = {
+                    "key": f"f:{name}:{code}",
+                    "buildingKey": key,
+                    "code": code,
+                    "sortOrder": sort_order(code),
+                    "floorZ": round(float(z), 2) if z is not None else None,
+                    "zEstimated": True,
+                }
                 floors.append(f)
                 floor_by_bld[key].append(f)
         elif any(p.get("floors_m") for p in parts):
@@ -136,9 +161,17 @@ def build(src: dict) -> tuple[dict, dict]:
         else:
             unf("building_without_floors", name)
         under = sum(c.startswith("B") for c in codes)
-        buildings.append({"key": key, "name": name, "aliases": aliases, "center": center, "footprint": foot,
-                          "_ground": main.get("ground_floors") or (len(codes) - under if codes else None),
-                          "_under": under if codes else None})
+        buildings.append(
+            {
+                "key": key,
+                "name": name,
+                "aliases": aliases,
+                "center": center,
+                "footprint": foot,
+                "_ground": main.get("ground_floors") or (len(codes) - under if codes else None),
+                "_under": under if codes else None,
+            }
+        )
     bld_keys = {b["key"] for b in buildings}
 
     def bkey(raw):
@@ -198,12 +231,23 @@ def build(src: dict) -> tuple[dict, dict]:
         m = re.search(r"(\d+)\s*칸", r["name"] or "")
         if kind == "stairs" and m:
             steps = int(m.group(1))
-        e = {"key": f"e:{r['id']}", "from": f"n:{r['from_node']}", "to": f"n:{r['to_node']}",
-             "name": r["name"], "kind": kind, "direction": direction, "pedestrianAccess": acc,
-             "wheelchairAccess": wc, "lengthM": round(length, 2), "stepCount": steps,
-             "widthM": float(r["width_m"]) if r.get("width_m") else None, "geometry": coords,
-             "estimated": "추정" in (r["name"] or "") or "추정" in (r.get("level_id") or ""),
-             "_building": bkey(r["building_id"]), "_level": r.get("level_id")}
+        e = {
+            "key": f"e:{r['id']}",
+            "from": f"n:{r['from_node']}",
+            "to": f"n:{r['to_node']}",
+            "name": r["name"],
+            "kind": kind,
+            "direction": direction,
+            "pedestrianAccess": acc,
+            "wheelchairAccess": wc,
+            "lengthM": round(length, 2),
+            "stepCount": steps,
+            "widthM": float(r["width_m"]) if r.get("width_m") else None,
+            "geometry": coords,
+            "estimated": "추정" in (r["name"] or "") or "추정" in (r.get("level_id") or ""),
+            "_building": bkey(r["building_id"]),
+            "_level": r.get("level_id"),
+        }
         edges.append(e)
         incident[r["from_node"]].append(e)
         incident[r["to_node"]].append(e)
@@ -218,8 +262,17 @@ def build(src: dict) -> tuple[dict, dict]:
         bk = Counter(blds).most_common(1)[0][0] if indoor else None
         if bk and bk not in bld_keys:
             unf("node_building_missing_in_scene", f"{nid}: {bk}")
-            buildings.append({"key": bk, "name": bk[2:], "aliases": [], "center": None, "footprint": None,
-                              "_ground": None, "_under": None})
+            buildings.append(
+                {
+                    "key": bk,
+                    "name": bk[2:],
+                    "aliases": [],
+                    "center": None,
+                    "footprint": None,
+                    "_ground": None,
+                    "_under": None,
+                }
+            )
             bld_keys.add(bk)
         kinds = {e["kind"] for e in inc}
         if "elevator" in kinds:
@@ -248,16 +301,27 @@ def build(src: dict) -> tuple[dict, dict]:
                 # 높이형 층 표시(계단참 높이 등)는 노드 자체 높이보다 약하다: 노드 z 로 먼저, 안 되면 표시 높이로.
                 fl = nearest_floor(bk, z) or nearest_floor(bk, hz)
                 by_hint = nearest_floor(bk, hz)
-                note = "" if (by_hint and fl and by_hint["key"] == fl["key"]) else \
-                    f" (표시 높이로는 {by_hint['code'] if by_hint else '층 없음'})"
+                note = (
+                    ""
+                    if (by_hint and fl and by_hint["key"] == fl["key"])
+                    else f" (표시 높이로는 {by_hint['code'] if by_hint else '층 없음'})"
+                )
                 fix("level_height_id", f"{nid}: {hint}, z {z} → {fl['code'] if fl else '층 모름'}{note}")
             else:
                 fl = nearest_floor(bk, z)
             if fl is None:
                 unf("indoor_node_floor_unknown", f"{nid} ({bk[2:]}, z {z})")
-        n = {"key": f"n:{nid}", "location": "indoor" if indoor else "outdoor", "buildingKey": bk,
-             "floorKey": fl["key"] if fl else None, "kind": nkind, "x": x, "y": y, "z": z,
-             "estimated": any(e["estimated"] for e in inc)}
+        n = {
+            "key": f"n:{nid}",
+            "location": "indoor" if indoor else "outdoor",
+            "buildingKey": bk,
+            "floorKey": fl["key"] if fl else None,
+            "kind": nkind,
+            "x": x,
+            "y": y,
+            "z": z,
+            "estimated": any(e["estimated"] for e in inc),
+        }
         nodes.append(n)
         node_by_key[n["key"]] = n
 
@@ -275,9 +339,19 @@ def build(src: dict) -> tuple[dict, dict]:
             fl = next((f for f in floor_by_bld.get(bk, []) if f["code"] == code), None) if code else None
             fl = fl or nearest_floor(bk, hz if hz is not None else z)
         cat = CATEGORY.get(p["category"], "other")
-        place = {"key": f"p:{p['id']}", "location": "indoor" if bk else "outdoor", "buildingKey": bk,
-                 "floorKey": fl["key"] if fl else None, "nodeKey": None, "name": p["name"], "aliases": [],
-                 "category": cat, "x": x, "y": y, "z": z}
+        place = {
+            "key": f"p:{p['id']}",
+            "location": "indoor" if bk else "outdoor",
+            "buildingKey": bk,
+            "floorKey": fl["key"] if fl else None,
+            "nodeKey": None,
+            "name": p["name"],
+            "aliases": [],
+            "category": cat,
+            "x": x,
+            "y": y,
+            "z": z,
+        }
 
         def eligible(n):
             if abs(n["z"] - z) > PLACE_DZ_M or math.hypot(n["x"] - x, n["y"] - y) > PLACE_RADIUS_M:
@@ -296,9 +370,11 @@ def build(src: dict) -> tuple[dict, dict]:
             unf("place_unattached", f"{p['name']}")
         naive = min(nodes, key=lambda n: math.hypot(n["x"] - x, n["y"] - y), default=None)
         if naive and naive["key"] != place["nodeKey"] and abs(naive["z"] - z) > PLACE_DZ_M:
-            fix("place_attach_height_corrected",
+            fix(
+                "place_attach_height_corrected",
                 f"{p['name']}: 평면 최근접 {naive['floorKey'] or naive['location']} (dz {naive['z'] - z:+.1f} m) 대신 "
-                f"{node_by_key[place['nodeKey']]['floorKey'] or node_by_key[place['nodeKey']]['location'] if place['nodeKey'] else '안 붙임'}")
+                f"{node_by_key[place['nodeKey']]['floorKey'] or node_by_key[place['nodeKey']]['location'] if place['nodeKey'] else '안 붙임'}",
+            )
         places.append(place)
 
     # ---- 열린 면 ----
@@ -309,15 +385,35 @@ def build(src: dict) -> tuple[dict, dict]:
             poly = poly[:-1]
         kind = AREA_KIND.get(a["kind"]) or ("field" if "운동장" in (a["name"] or "") else "other")
         ak = f"a:{a['id']}"
-        areas.append({"key": ak, "location": "outdoor", "floorKey": None, "name": a["name"] or "",
-                      "kind": kind, "polygon": poly, "z": a["elevation_m"], "estimated": "추정" in (a["name"] or "")})
+        areas.append(
+            {
+                "key": ak,
+                "location": "outdoor",
+                "floorKey": None,
+                "name": a["name"] or "",
+                "kind": kind,
+                "polygon": poly,
+                "z": a["elevation_m"],
+                "estimated": "추정" in (a["name"] or ""),
+            }
+        )
         for n in nodes:
-            if n["location"] == "outdoor" and point_in_poly(n["x"], n["y"], poly) and (
-                    a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= PLACE_DZ_M):
+            if (
+                n["location"] == "outdoor"
+                and point_in_poly(n["x"], n["y"], poly)
+                and (a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= PLACE_DZ_M)
+            ):
                 area_nodes.append({"areaKey": ak, "nodeKey": n["key"]})
 
-    content = {"buildings": buildings, "floors": floors, "nodes": nodes, "edges": edges, "places": places,
-               "walkAreas": areas, "walkAreaNodes": area_nodes}
+    content = {
+        "buildings": buildings,
+        "floors": floors,
+        "nodes": nodes,
+        "edges": edges,
+        "places": places,
+        "walkAreas": areas,
+        "walkAreaNodes": area_nodes,
+    }
     rep["counts"] = {k: len(v) for k, v in content.items()}
     rep["fixed"] = dict(rep["fixed"])
     rep["unfixed"] = dict(rep["unfixed"])

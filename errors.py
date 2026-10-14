@@ -1,4 +1,5 @@
 """모든 오류를 같은 모양으로: {"error": {"code", "message", "details"}}"""
+
 from fastapi import FastAPI, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
@@ -27,5 +28,6 @@ def install(app: FastAPI) -> None:
 
     @app.exception_handler(RequestValidationError)
     async def _val(_: Request, e: RequestValidationError):
-        return JSONResponse(body("invalid_request", "요청 값이 잘못됨", {"errors": jsonable_encoder(e.errors())}),
-                            status_code=422)
+        return JSONResponse(
+            body("invalid_request", "요청 값이 잘못됨", {"errors": jsonable_encoder(e.errors())}), status_code=422
+        )

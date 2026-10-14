@@ -72,8 +72,9 @@ def test_draft_publish_and_checksum(clean):
 
 def test_publish_blocked_by_errors(clean):
     c, rep = build()
-    c["edges"].append({**c["edges"][0], "key": "e:bad", "from": "n:i1", "to": "n:i3", "kind": "corridor",
-                       "name": "층이 바뀌는 복도"})
+    c["edges"].append(
+        {**c["edges"][0], "key": "e:bad", "from": "n:i1", "to": "n:i3", "kind": "corridor", "name": "층이 바뀌는 복도"}
+    )
     rid = release.create_draft(clean, c, rep, {"label": "fixture"})
     clean.commit()
     with pytest.raises(release.PublishError, match="층이 바뀌는"):
@@ -84,6 +85,12 @@ def test_publish_blocked_by_errors(clean):
 def test_ewkb_parse():
     # LINESTRING Z (1 2 3, 4 5 6), SRID 5186
     import struct
-    b = b"\x01" + struct.pack("<I", 0x80000002 | 0x20000000) + struct.pack("<I", 5186) + struct.pack("<I", 2) \
+
+    b = (
+        b"\x01"
+        + struct.pack("<I", 0x80000002 | 0x20000000)
+        + struct.pack("<I", 5186)
+        + struct.pack("<I", 2)
         + struct.pack("<6d", 1, 2, 3, 4, 5, 6)
+    )
     assert sources.parse_ewkb(b.hex()) == ("LineString", [[1, 2, 3], [4, 5, 6]])

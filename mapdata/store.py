@@ -1,4 +1,5 @@
 """공개된 최신 릴리스를 메모리에 올려 둔다. 요청마다 DB 에서 최신 id 만 확인하고 바뀌면 다시 읽는다."""
+
 import json
 import threading
 from pathlib import Path

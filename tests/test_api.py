@@ -10,6 +10,7 @@ from mapdata import release, transform
 @pytest.fixture
 def client(clean):
     import main
+
     return TestClient(main.app)
 
 
@@ -114,10 +115,19 @@ def test_route_no_route_island_and_one_way(client, published):
 def test_route_xyz_and_errors(client, published):
     r = client.get("/v1/routes", params={"from": "1,0,100", "to": "30,5,104"})
     assert r.status_code == 200 and r.json()["from"]["type"] == "point"
-    assert client.get("/v1/routes", params={"from": "1,0,130", "to": "p:p_room"}).json()["error"]["code"] == "no_nearby_node"
-    assert client.get("/v1/routes", params={"from": "p:p_far", "to": "p:p_room"}).json()["error"]["code"] == "place_not_routable"
+    assert (
+        client.get("/v1/routes", params={"from": "1,0,130", "to": "p:p_room"}).json()["error"]["code"]
+        == "no_nearby_node"
+    )
+    assert (
+        client.get("/v1/routes", params={"from": "p:p_far", "to": "p:p_room"}).json()["error"]["code"]
+        == "place_not_routable"
+    )
     assert client.get("/v1/routes", params={"from": "zzz", "to": "p:p_room"}).json()["error"]["code"] == "bad_endpoint"
-    assert client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": "x"}).json()["error"]["code"] == "bad_mode"
+    assert (
+        client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": "x"}).json()["error"]["code"]
+        == "bad_mode"
+    )
     assert client.get("/v1/routes", params={"to": "p:p_room"}).json()["error"]["code"] == "invalid_request"
 
 

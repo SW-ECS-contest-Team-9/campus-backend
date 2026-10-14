@@ -27,9 +27,15 @@ def latest_release(conn=Depends(get_conn)):
     rel = store.latest(conn)
     if rel is None:
         raise ApiError(404, "no_release", "공개된 지도 릴리스가 없음")
-    return {"id": rel["id"], "version": rel["version"], "schemaVersion": rel["schema_version"],
-            "sizeBytes": rel["size_bytes"], "sha256": rel["sha256"].strip(),
-            "url": f"/v1/map/releases/{rel['id']}/package", "publishedAt": _iso(rel["published_at"])}
+    return {
+        "id": rel["id"],
+        "version": rel["version"],
+        "schemaVersion": rel["schema_version"],
+        "sizeBytes": rel["size_bytes"],
+        "sha256": rel["sha256"].strip(),
+        "url": f"/v1/map/releases/{rel['id']}/package",
+        "publishedAt": _iso(rel["published_at"]),
+    }
 
 
 @router.get("/map/releases/{release_id}/package")
@@ -49,8 +55,13 @@ def release_package(release_id: int, request: Request, conn=Depends(get_conn)):
 
 
 @router.get("/places")
-def places(q: str = "", building: str | None = None, floor: str | None = None,
-           limit: int = Query(30, ge=1, le=200), conn=Depends(get_conn)):
+def places(
+    q: str = "",
+    building: str | None = None,
+    floor: str | None = None,
+    limit: int = Query(30, ge=1, le=200),
+    conn=Depends(get_conn),
+):
     rel, idx = _need_index(conn)
     hits = idx.search(q, building, floor, limit)
     return {"releaseId": rel["id"], "version": rel["version"], "count": len(hits), "items": hits}
@@ -77,14 +88,17 @@ def _endpoint(idx, s: str, which: str) -> dict:
 
 
 @router.get("/routes")
-def routes(from_: str = Query(..., alias="from"), to: str = Query(...), mode: str = "shortest",
-           conn=Depends(get_conn)):
+def routes(from_: str = Query(..., alias="from"), to: str = Query(...), mode: str = "shortest", conn=Depends(get_conn)):
     if mode not in MODES:
         raise ApiError(400, "bad_mode", f"mode 는 {', '.join(MODES)}", {"mode": mode})
     rel, idx = _need_index(conn)
     a, b = _endpoint(idx, from_, "from"), _endpoint(idx, to, "to")
     r = idx.route(a["nodeKey"], b["nodeKey"], mode)
     if r is None:
-        raise ApiError(404, "no_route", "이 조건으로 이어지는 길이 없음",
-                       {"from": a["nodeKey"], "to": b["nodeKey"], "mode": mode, "releaseId": rel["id"]})
+        raise ApiError(
+            404,
+            "no_route",
+            "이 조건으로 이어지는 길이 없음",
+            {"from": a["nodeKey"], "to": b["nodeKey"], "mode": mode, "releaseId": rel["id"]},
+        )
     return {"releaseId": rel["id"], "version": rel["version"], "from": a, "to": b, **r}

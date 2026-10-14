@@ -1,4 +1,5 @@
 """공개된 꾸러미 하나로 하는 검색·경로 계산 (메모리 안)."""
+
 import heapq
 import math
 import re
@@ -52,8 +53,11 @@ class MapIndex:
         if q in self.buildings:
             return {q}
         t = normalize(q)
-        return {k for k, b in self.buildings.items()
-                if t in {normalize(b["name"]), _strip_suffix(normalize(b["name"]))} | {normalize(a) for a in b["aliases"]}}
+        return {
+            k
+            for k, b in self.buildings.items()
+            if t in {normalize(b["name"]), _strip_suffix(normalize(b["name"]))} | {normalize(a) for a in b["aliases"]}
+        }
 
     def search(self, q: str = "", building: str | None = None, floor: str | None = None, limit: int = 30) -> list[dict]:
         tokens = [normalize(t) for t in (q or "").split()]
@@ -95,10 +99,22 @@ class MapIndex:
     def place_out(self, p: dict, **extra) -> dict:
         b = self.buildings.get(p["buildingKey"])
         f = self.floors.get(p["floorKey"])
-        return {"key": p["key"], "name": p["name"], "category": p["category"], "location": p["location"],
-                "buildingKey": p["buildingKey"], "buildingName": b["name"] if b else None,
-                "floorKey": p["floorKey"], "floorCode": f["code"] if f else None, "nodeKey": p["nodeKey"],
-                "routable": p["nodeKey"] is not None, "x": p["x"], "y": p["y"], "z": p["z"], **extra}
+        return {
+            "key": p["key"],
+            "name": p["name"],
+            "category": p["category"],
+            "location": p["location"],
+            "buildingKey": p["buildingKey"],
+            "buildingName": b["name"] if b else None,
+            "floorKey": p["floorKey"],
+            "floorCode": f["code"] if f else None,
+            "nodeKey": p["nodeKey"],
+            "routable": p["nodeKey"] is not None,
+            "x": p["x"],
+            "y": p["y"],
+            "z": p["z"],
+            **extra,
+        }
 
     # ---------- 경로 ----------
     def nearest_node(self, x: float, y: float, z: float) -> dict | None:
@@ -163,8 +179,13 @@ class MapIndex:
         n = self.nodes[node_key]
         f = self.floors.get(n["floorKey"])
         b = self.buildings.get(n["buildingKey"])
-        return {"location": n["location"], "buildingKey": n["buildingKey"], "buildingName": b["name"] if b else None,
-                "floorKey": n["floorKey"], "floorCode": f["code"] if f else None}
+        return {
+            "location": n["location"],
+            "buildingKey": n["buildingKey"],
+            "buildingName": b["name"] if b else None,
+            "floorKey": n["floorKey"],
+            "floorCode": f["code"] if f else None,
+        }
 
     def _describe(self, nodes: list[str], edges: list[dict], mode: str) -> dict:
         geometry, steps = [], []
@@ -178,21 +199,46 @@ class MapIndex:
             stairs += e["kind"] == "stairs"
             fa, fb = self.floor_label(a), self.floor_label(b)
             last = steps[-1] if steps else None
-            if last and last["kind"] == e["kind"] and last["name"] == e["name"] and e["kind"] not in ("stairs", "elevator"):
+            if (
+                last
+                and last["kind"] == e["kind"]
+                and last["name"] == e["name"]
+                and e["kind"] not in ("stairs", "elevator")
+            ):
                 last["distanceM"] = round(last["distanceM"] + e["lengthM"], 2)
                 last["edgeKeys"].append(e["key"])
                 last["to"] = fb
                 last["toNode"] = b
             else:
-                steps.append({"kind": e["kind"], "name": e["name"], "distanceM": e["lengthM"], "edgeKeys": [e["key"]],
-                              "fromNode": a, "toNode": b, "from": fa, "to": fb})
+                steps.append(
+                    {
+                        "kind": e["kind"],
+                        "name": e["name"],
+                        "distanceM": e["lengthM"],
+                        "edgeKeys": [e["key"]],
+                        "fromNode": a,
+                        "toNode": b,
+                        "from": fa,
+                        "to": fb,
+                    }
+                )
         for s in steps:
-            s["floorChange"] = (s["from"]["floorKey"] != s["to"]["floorKey"] or s["from"]["location"] != s["to"]["location"])
+            s["floorChange"] = (
+                s["from"]["floorKey"] != s["to"]["floorKey"] or s["from"]["location"] != s["to"]["location"]
+            )
             s["dz"] = round(self.nodes[s["toNode"]]["z"] - self.nodes[s["fromNode"]]["z"], 2)
             s["instruction"] = _instruction(s)
         duration = total / WALK_MPS + sum(20 for e in edges if e["kind"] == "elevator")
-        return {"mode": mode, "distanceM": round(total, 2), "durationS": round(duration), "stairsEdges": stairs,
-                "nodeKeys": nodes, "edgeKeys": [e["key"] for e in edges], "geometry": geometry, "steps": steps}
+        return {
+            "mode": mode,
+            "distanceM": round(total, 2),
+            "durationS": round(duration),
+            "stairsEdges": stairs,
+            "nodeKeys": nodes,
+            "edgeKeys": [e["key"] for e in edges],
+            "geometry": geometry,
+            "steps": steps,
+        }
 
 
 def _where(lbl: dict) -> str:

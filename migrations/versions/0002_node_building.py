@@ -7,6 +7,7 @@ Revision ID: 0002_node_building
 Revises: 0001_map_schema
 Create Date: 2026-10-15
 """
+
 from typing import Sequence, Union
 
 import sqlalchemy as sa
