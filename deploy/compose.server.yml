@@ -37,7 +37,7 @@ services:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?deploy/.env 에 POSTGRES_PASSWORD 를 넣으세요}
       MAP_DATA_DIR: /data/releases
       CORS_ORIGINS: ${CORS_ORIGINS:-}
-      TRACKER_API: ${TRACKER_API:-http://host.docker.internal:3000}
+      TRACKER_API: ${TRACKER_API:-http://100.93.21.92:3000}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

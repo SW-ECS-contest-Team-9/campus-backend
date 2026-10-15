@@ -34,10 +34,10 @@ docker exec campus-collector-db sh -c 'pg_dump -U "$POSTGRES_USER" -d "$POSTGRES
 deploy/import-release.sh /tmp/mobility.sql
 ```
 
-- 원천: 트래커 읽기 API(`TRACKER_API`, 기본 `http://host.docker.internal:3000`) + 위 SQL(보행 통행·방향·휠체어, 노드 층, 열린 면). 트래커 DB 는 읽기만 한다.
+- 원천: 트래커 읽기 API(`TRACKER_API`, 기본 `http://100.93.21.92:3000`) + 위 SQL(보행 통행·방향·휠체어, 노드 층, 열린 면). 트래커 DB 는 읽기만 한다.
 - pg_dump 의 `circular foreign-key constraints` 경고는 무시해도 된다.
 - 검증 오류가 없으면 새 버전으로 공개하고 보고서(JSON)와 지금 최신을 찍는다. 오류가 있으면 공개하지 않고 종료 코드 1.
-- 컨테이너에서 트래커 API 에 닿지 않으면 `deploy/.env` 의 `TRACKER_API=http://100.93.21.92:3000` 로 바꾸고 `DC up -d --wait`.
+- 트래커는 Tailscale IP(100.93.21.92:3000)에만 열려 있어 `host.docker.internal:3000` 으로는 컨테이너에서 닿지 않는다(2026-10-15 서버에서 확인). 이 PC 등 로컬 시험은 `deploy/.env` 에 `TRACKER_API=http://host.docker.internal:3210` 처럼 적는다.
 
 ## 3. 업데이트
 
