@@ -1,0 +1,35 @@
+"""공개된 최신 릴리스를 메모리에 올려 둔다. 요청마다 DB 에서 최신 id 만 확인하고 바뀌면 다시 읽는다."""
+
+import json
+import threading
+from pathlib import Path
+
+from mapdata.routing import MapIndex
+
+LATEST_SQL = (
+    "SELECT r.* FROM map_release r JOIN campus c ON c.id = r.campus_id"
+    " WHERE c.code = %s AND r.status = 'published' ORDER BY r.version DESC LIMIT 1"
+)
+
+_lock = threading.Lock()
+_cache: dict = {"id": None, "index": None}
+
+
+def latest(conn, campus: str = "skuniv") -> dict | None:
+    return conn.execute(LATEST_SQL, (campus,)).fetchone()
+
+
+def latest_index(conn) -> tuple[dict, MapIndex] | None:
+    rel = latest(conn)
+    if rel is None:
+        return None
+    with _lock:
+        if _cache["id"] != rel["id"]:
+            pkg = json.loads(Path(rel["file_path"]).read_bytes())
+            _cache.update(id=rel["id"], index=MapIndex(pkg))
+        return rel, _cache["index"]
+
+
+def clear() -> None:
+    with _lock:
+        _cache.update(id=None, index=None)
