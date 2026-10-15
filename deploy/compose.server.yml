@@ -1,0 +1,53 @@
+# 운영 서버(트래커 서버)용. 값은 같은 폴더의 .env(= .env.server.example 복사본)에서 읽는다.
+# 저장소 루트에서: docker compose -f deploy/compose.server.yml up -d --build --wait
+name: campus-backend-server
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-campus_backend}
+      POSTGRES_USER: ${POSTGRES_USER:-campus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?deploy/.env 에 POSTGRES_PASSWORD 를 넣으세요}
+    ports:
+      - "127.0.0.1:${DB_PORT:-5435}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", 'pg_isready -U "$$POSTGRES_USER" -d "$$POSTGRES_DB"']
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    restart: unless-stopped
+
+  api:
+    image: campus-backend-api:${API_TAG:-latest}
+    build:
+      context: ..
+      dockerfile: Dockerfile
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: "5432"
+      POSTGRES_DB: ${POSTGRES_DB:-campus_backend}
+      POSTGRES_USER: ${POSTGRES_USER:-campus}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?deploy/.env 에 POSTGRES_PASSWORD 를 넣으세요}
+      MAP_DATA_DIR: /data/releases
+      CORS_ORIGINS: ${CORS_ORIGINS:-}
+      TRACKER_API: ${TRACKER_API:-http://100.93.21.92:3000}
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    ports:
+      - "${API_BIND:-0.0.0.0}:${API_PORT:-8010}:8010"
+    volumes:
+      - releases:/data/releases
+    restart: unless-stopped
+
+volumes:
+  pgdata:
+    name: campus-backend-pgdata
+  releases:
+    name: campus-backend-releases

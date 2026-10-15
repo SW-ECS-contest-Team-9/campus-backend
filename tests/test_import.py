@@ -94,3 +94,10 @@ def test_ewkb_parse():
         + struct.pack("<6d", 1, 2, 3, 4, 5, 6)
     )
     assert sources.parse_ewkb(b.hex()) == ("LineString", [[1, 2, 3], [4, 5, 6]])
+
+
+def test_copy_unescape_literal_backslash():
+    # COPY 텍스트: 글자 그대로의 역슬래시는 두 개(\\)로 적힌다. 역슬래시+t 가 탭으로 바뀌면 안 된다.
+    assert sources._unescape(r"A\\tB") == "A\\tB"
+    assert sources._unescape(r"a\tb\nc") == "a\tb\nc"
+    assert sources._unescape(r"C:\\\\x") == "C:\\\\x"

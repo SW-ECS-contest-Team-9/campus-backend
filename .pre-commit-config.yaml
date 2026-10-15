@@ -24,4 +24,4 @@ repos:
         entry: .env 파일은 커밋할 수 없습니다. .env.example 을 고치세요.
         language: fail
         files: (^|/)\.env(\..+)?$
-        exclude: \.env\.example$
+        exclude: \.example$
