@@ -11,6 +11,7 @@
 """
 
 import json
+import re
 import struct
 import urllib.request
 from datetime import datetime, timezone
@@ -41,10 +42,14 @@ def read_copy_tables(path: str) -> dict[str, list[dict]]:
     return tables
 
 
+_COPY_ESC = {"t": "\t", "n": "\n", "r": "\r", "b": "\b", "f": "\f", "v": "\v"}
+
+
 def _unescape(v: str) -> str:
+    # 왼쪽부터 한 번에 푼다(\\ 를 먼저 만나면 역슬래시 하나).
     if "\\" not in v:
         return v
-    return v.replace("\\t", "\t").replace("\\n", "\n").replace("\\r", "\r").replace("\\\\", "\\")
+    return re.sub(r"\\(.)", lambda m: _COPY_ESC.get(m.group(1), m.group(1)), v)
 
 
 def parse_ewkb(hexstr: str):
