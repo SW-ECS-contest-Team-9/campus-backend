@@ -252,5 +252,6 @@ def test_summary_counts_steps_and_climb_by_direction():
     idx = MapIndex(pkg(n, e))
     up = idx.route("a", "c", "shortest")["summary"]
     assert up["steps"] == 12 and up["climbM"] == 2.0 and up["descentM"] == 0.0
+    assert up["maxSlopePct"] == 0.0  # 계단 기울기는 걷는 길 기울기에 안 넣는다
     down = idx.route("c", "a", "shortest")["summary"]
     assert down["climbM"] == 0.0 and down["descentM"] == 2.0

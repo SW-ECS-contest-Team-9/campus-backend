@@ -459,7 +459,7 @@ class MapIndex:
                 riding = False
             if e["kind"] == "stairs":
                 steps += i.get("steps") or 0
-            if i.get("maxSlopePct") is not None:
+            if e["kind"] != "stairs" and i.get("maxSlopePct") is not None:
                 max_slope = max(max_slope or 0.0, i["maxSlopePct"])
             t["indoorM" if i.get("indoor") else "outdoorM"] += length
             t["rainExposedM"] += length * (1 - (i.get("coveredRatio") or 0.0))
