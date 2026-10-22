@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from fixture_source import road, source
-from mapdata import release, sources, transform
+from mapdata import indicators, release, sources, transform
 
 
 def build():
@@ -142,3 +142,38 @@ def test_transform_area_nodes_on_boundary_and_same_level_only():
     }
     c, _ = transform.build(src)
     assert {w["nodeKey"] for w in c["walkAreaNodes"]} == {"n:edge", "n:in"}  # 1 m 위 노드는 빠진다
+
+
+def test_transform_adds_indicators_and_coverage():
+    s = source()
+    s["structures"] = indicators.parse_structures(
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "C1", "kind": "extrude", "type": "canopy", "fromM": 103, "toM": 103.3},
+                "geometry": {"type": "Polygon", "coordinates": [[[0, -2], [10, -2], [10, 2], [0, 2], [0, -2]]]},
+            }
+        ]
+    )
+    c, rep = transform.build(s)
+    e = {x["key"]: x["indicators"] for x in c["edges"]}
+    assert e["e:r1"]["cover"] == "canopy"  # 앞길 0~10 m 가 차양 밑
+    # "중앙 계단 (8칸)" 인데 높이 차 4 m: 한 단 0.5 m 는 안 맞아 이름 값을 버리고 높이로 어림
+    assert e["e:r4"]["steps"] == 25 and e["e:r4"]["src"]["steps"] == "estimated"
+    assert e["e:r7"]["elevator"]["floors"] == ["1F", "2F"]
+    assert rep["indicators"]["fields"]["cover"]["pct"] == 100.0
+    c, rep = build()  # 구조물 없이도 기하 지표는 붙는다
+    assert all("walkS" in x["indicators"] for x in c["edges"])
+    assert rep["indicators"]["fields"]["cover"]["known"] < rep["indicators"]["fields"]["cover"]["total"]
+
+
+def test_package_carries_indicators_and_route_modes(clean):
+    c, rep = build()
+    rid = release.create_draft(clean, c, rep, {"label": "fixture"})
+    clean.commit()
+    pkg = release.build_package(clean, rid)
+    assert pkg["schemaVersion"] == 1  # 지표는 선택 칸: 옛 앱은 무시
+    e = {x["key"]: x for x in pkg["edges"]}
+    assert e["e:r4"]["indicators"]["steps"] == 25
+    assert "landmark" in {x["key"]: x for x in pkg["nodes"]}["n:o1"]["indicators"]
+    assert set(pkg["routeModes"]) >= {"shortest", "fastest", "avoidStairs", "accessible", "rainProtected", "nightSafe"}

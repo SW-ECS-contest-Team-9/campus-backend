@@ -7,6 +7,8 @@ import math
 import re
 from collections import Counter, defaultdict
 
+from mapdata import indicators
+
 FLOOR_TOL_M = 1.5  # 높이로 층을 정할 때 허용 차
 PLACE_DZ_M = 2.0  # 장소-노드 높이 차 한도
 PLACE_RADIUS_M = 25.0  # 장소-노드 평면 거리 한도
@@ -425,6 +427,9 @@ def build(src: dict) -> tuple[dict, dict]:
         "walkAreas": areas,
         "walkAreaNodes": area_nodes,
     }
+    structs = src.get("structures")
+    rep["indicators"] = indicators.annotate(content, structs)
+    rep["indicators"]["structureFiles"] = structs.get("files") if structs else None
     rep["counts"] = {k: len(v) for k, v in content.items()}
     rep["fixed"] = dict(rep["fixed"])
     rep["unfixed"] = dict(rep["unfixed"])

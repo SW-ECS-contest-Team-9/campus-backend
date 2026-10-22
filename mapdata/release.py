@@ -9,6 +9,8 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from mapdata.routing import MODE_SPEC
+
 SCHEMA_VERSION = 1
 CAMPUS = {"code": "skuniv", "name": "서경대학교", "crs": 5186}
 EDGE_KINDS = {"walkway", "sidewalk", "crossing", "corridor", "stairs", "ramp", "elevator", "vehicle_road"}
@@ -73,8 +75,8 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
             ).fetchone()["id"]
         for n in content["nodes"]:
             nid[n["key"]] = conn.execute(
-                "INSERT INTO node (release_id, key, location, building_id, floor_id, kind, x, y, z, estimated)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                "INSERT INTO node (release_id, key, location, building_id, floor_id, kind, x, y, z, estimated, indicators)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     rid,
                     n["key"],
@@ -86,13 +88,14 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                     n["y"],
                     n["z"],
                     n["estimated"],
+                    _json(n.get("indicators")),
                 ),
             ).fetchone()["id"]
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO edge (release_id, key, from_node_id, to_node_id, name, kind, direction, pedestrian_access,"
-                " wheelchair_access, length_m, step_count, width_m, geometry, estimated)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " wheelchair_access, length_m, step_count, width_m, geometry, estimated, indicators)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (
                         rid,
@@ -109,6 +112,7 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                         e["widthM"],
                         Jsonb(e["geometry"]),
                         e["estimated"],
+                        _json(e.get("indicators")),
                     )
                     for e in content["edges"]
                 ],
@@ -156,6 +160,10 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                 [(aid[w["areaKey"]], nid[w["nodeKey"]]) for w in content["walkAreaNodes"]],
             )
     return rid
+
+
+def _json(v):
+    return None if v is None else Jsonb(v)
 
 
 # ---------- DB → 꾸러미 ----------
@@ -213,6 +221,7 @@ def build_package(conn, rid: int) -> dict:
                 "y": _f(r["y"]),
                 "z": _f(r["z"]),
                 "estimated": r["estimated"],
+                **({"indicators": r["indicators"]} if r["indicators"] is not None else {}),
             }
             for r in q("SELECT * FROM node WHERE release_id = %s ORDER BY key")
         ],
@@ -231,6 +240,7 @@ def build_package(conn, rid: int) -> dict:
                 "widthM": _f(r["width_m"]),
                 "geometry": r["geometry"],
                 "estimated": r["estimated"],
+                **({"indicators": r["indicators"]} if r["indicators"] is not None else {}),
             }
             for r in q("SELECT * FROM edge WHERE release_id = %s ORDER BY key")
         ],
@@ -272,6 +282,8 @@ def build_package(conn, rid: int) -> dict:
             ),
             key=lambda w: (w["areaKey"], w["nodeKey"]),
         ),
+        # 경로 방식별 비용 규칙(앱이 기기 안에서 같은 규칙으로 길을 찾도록). 선택 칸.
+        "routeModes": MODE_SPEC,
     }
     return pkg
 
