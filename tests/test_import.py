@@ -4,7 +4,7 @@ from pathlib import Path
 
 import pytest
 
-from fixture_source import source
+from fixture_source import road, source
 from mapdata import release, sources, transform
 
 
@@ -101,3 +101,44 @@ def test_copy_unescape_literal_backslash():
     assert sources._unescape(r"A\\tB") == "A\\tB"
     assert sources._unescape(r"a\tb\nc") == "a\tb\nc"
     assert sources._unescape(r"C:\\\\x") == "C:\\\\x"
+
+
+def test_transform_vehicle_and_shared_roads_are_vehicle_road():
+    src = {
+        "roads": [
+            road("v1", "a", "b", [[0, 0, 100], [10, 0, 100]], road_class="vehicle", access="unknown"),
+            road("v2", "b", "c", [[10, 0, 100], [20, 0, 102]], "ramp", road_class="shared"),
+            road("p1", "c", "d", [[20, 0, 102], [30, 0, 102]], "ramp"),
+        ],
+        "node_levels": {},
+        "places": [],
+        "buildings": [],
+        "open_areas": [],
+    }
+    c, _ = transform.build(src)
+    kinds = {e["key"]: e["kind"] for e in c["edges"]}
+    assert kinds == {"e:v1": "vehicle_road", "e:v2": "vehicle_road", "e:p1": "ramp"}
+
+
+def test_transform_area_nodes_on_boundary_and_same_level_only():
+    src = {
+        "roads": [
+            road("r1", "edge", "in", [[0, 5, 100], [5, 5, 100]]),
+            road("r2", "in", "up", [[5, 5, 100], [6, 6, 101]], "stairs"),
+            road("r3", "up", "out", [[6, 6, 101], [30, 5, 101]]),
+        ],
+        "node_levels": {},
+        "places": [],
+        "buildings": [],
+        "open_areas": [
+            {
+                "id": "a1",
+                "name": "광장",
+                "kind": "plaza",
+                "elevation_m": 100.0,
+                "polygon": [[0, 0], [10, 0], [10, 10], [0, 10]],
+            }
+        ],
+    }
+    c, _ = transform.build(src)
+    assert {w["nodeKey"] for w in c["walkAreaNodes"]} == {"n:edge", "n:in"}  # 1 m 위 노드는 빠진다

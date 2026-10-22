@@ -11,6 +11,8 @@ FLOOR_TOL_M = 1.5  # 높이로 층을 정할 때 허용 차
 PLACE_DZ_M = 2.0  # 장소-노드 높이 차 한도
 PLACE_RADIUS_M = 25.0  # 장소-노드 평면 거리 한도
 COORD_TOL_M = 0.05
+AREA_DZ_M = 0.5  # 열린 면 높이와 노드 높이 차 한도: 넘으면 다른 단(사이는 벽)
+AREA_EDGE_TOL_M = 0.5  # 면 경계 밖으로 이만큼까지는 면 위 노드로 본다
 
 KIND_BY_STRUCTURE = {
     "indoor_corridor": "corridor",
@@ -83,6 +85,15 @@ def point_in_poly(x, y, poly) -> bool:
         if (y1 > y) != (y2 > y) and x < (x2 - x1) * (y - y1) / (y2 - y1) + x1:
             inside = not inside
     return inside
+
+
+def dist_to_ring(x, y, poly) -> float:
+    best = math.inf
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        dx, dy = x2 - x1, y2 - y1
+        t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy))) if dx or dy else 0.0
+        best = min(best, math.hypot(x - x1 - t * dx, y - y1 - t * dy))
+    return best
 
 
 def _to_5186():
@@ -199,7 +210,7 @@ def build(src: dict) -> tuple[dict, dict]:
         if length < 0.01 or len(coords) < 2:
             fix("zero_length_dropped", r["id"])
             continue
-        if r["road_class"] == "vehicle" and r["structure"] in ("ordinary", None):
+        if r["road_class"] in ("vehicle", "shared") and r["structure"] in ("ordinary", "ramp", None):
             kind = "vehicle_road"
         else:
             kind = KIND_BY_STRUCTURE.get(r["structure"], "walkway")
@@ -400,8 +411,8 @@ def build(src: dict) -> tuple[dict, dict]:
         for n in nodes:
             if (
                 n["location"] == "outdoor"
-                and point_in_poly(n["x"], n["y"], poly)
-                and (a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= PLACE_DZ_M)
+                and (point_in_poly(n["x"], n["y"], poly) or dist_to_ring(n["x"], n["y"], poly) <= AREA_EDGE_TOL_M)
+                and (a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= AREA_DZ_M)
             ):
                 area_nodes.append({"areaKey": ak, "nodeKey": n["key"]})
 
