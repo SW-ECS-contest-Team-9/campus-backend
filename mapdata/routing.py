@@ -9,6 +9,13 @@ WALK_MPS = 1.2
 MODES = ("shortest", "avoidStairs", "preferElevator")
 ATTACH_RADIUS_M = 25.0
 ATTACH_DZ_M = 2.0
+# 열린 면(광장·운동장 등) 가로지르기: 면 위 노드끼리 면 안에 머무는 직선으로 잇는다(꾸러미에는 없고 읽을 때 만든다).
+AREA_DZ_M = 0.5  # 면 높이와 노드 높이 차 한도. 넘으면 다른 단이라 잇지 않는다(단 사이는 벽).
+AREA_MAX_NEIGHBORS = 12  # 노드마다 가까운 이웃 몇 개까지만(면 노드가 많아도 간선 수가 n² 로 늘지 않게)
+OPEN_AREA_FACTOR = 1.02  # 같은 길이면 그려 둔 길(실측 선)을 고르게 하는 작은 덤
+VEHICLE_ROAD_FACTOR = 1.5  # 보행 허용이 아닌 차도
+VEHICLE_ROAD_WALK_FACTOR = 1.1  # 보행 허용 차도(보차 혼용): 비슷한 길이면 인도를 고르게 하는 작은 덤
+AREA_LABEL = {"plaza": "광장", "field": "운동장", "parking_aisle": "주차장"}
 
 
 def normalize(s: str) -> str:
@@ -29,6 +36,56 @@ def _floor_match(t: str, code: str | None) -> bool:
     return (f"b{m.group(2)}" if m.group(1) else f"{m.group(2)}f") == code.lower()
 
 
+def _cross(o, a, b) -> float:
+    return (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0])
+
+
+class _Ring:
+    """면 외곽(닫히지 않은 꼭짓점 목록). 경계 위 점은 안으로 본다."""
+
+    def __init__(self, polygon: list):
+        pts = [(float(p[0]), float(p[1])) for p in polygon]
+        if len(pts) > 1 and pts[0] == pts[-1]:
+            pts.pop()
+        self.edges = list(zip(pts, pts[1:] + pts[:1]))
+
+    def covers(self, p) -> bool:
+        inside = False
+        for a, b in self.edges:
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy or 1.0)))
+            if math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy) < 1e-6:
+                return True
+            if (a[1] > p[1]) != (b[1] > p[1]) and p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0]):
+                inside = not inside
+        return inside
+
+    def sees(self, p, q) -> bool:
+        """선분 pq 가 통째로 면 안(경계 포함)에 있는가: 경계와 만나는 곳마다 자르고 조각 가운데를 본다."""
+        length = math.dist(p, q)
+        if length < 1e-9:
+            return True
+        cuts = [0.0, 1.0]
+        for a, b in self.edges:
+            d1, d2 = _cross(p, q, a), _cross(p, q, b)
+            on1, on2 = abs(d1) < 1e-7 * length, abs(d2) < 1e-7 * length
+            if on1 and on2:  # 경계와 겹쳐 나란한 변
+                for c in (a, b):
+                    cuts.append(((c[0] - p[0]) * (q[0] - p[0]) + (c[1] - p[1]) * (q[1] - p[1])) / length**2)
+            elif (d1 > 0) != (d2 > 0) or on1 or on2:
+                den = _cross(a, b, p) - _cross(a, b, q)
+                if den:
+                    cuts.append(_cross(a, b, p) / den)
+        ts = sorted(t for t in cuts if 0.0 <= t <= 1.0)
+        for t0, t1 in zip(ts, ts[1:]):
+            if t1 - t0 < 1e-9:
+                continue
+            m = (t0 + t1) / 2
+            if not self.covers((p[0] + m * (q[0] - p[0]), p[1] + m * (q[1] - p[1]))):
+                return False
+        return True
+
+
 class MapIndex:
     def __init__(self, pkg: dict):
         self.pkg = pkg
@@ -45,6 +102,55 @@ class MapIndex:
                 self.out[e["from"]].append((e, e["to"]))
             if e["direction"] in ("both", "backward"):
                 self.out[e["to"]].append((e, e["from"]))
+        self.walk_areas = {a["key"]: a for a in pkg.get("walkAreas", [])}
+        for e in self._area_edges(pkg.get("walkAreaNodes", [])):
+            self.edges[e["key"]] = e
+            self.out[e["from"]].append((e, e["to"]))
+            self.out[e["to"]].append((e, e["from"]))
+
+    def _area_edges(self, area_nodes: list[dict]) -> list[dict]:
+        """면마다 같은 높이 노드끼리, 면 안에 머무는 직선이면 가상 간선(kind open_area)."""
+        members = defaultdict(list)
+        for w in area_nodes:
+            a, n = self.walk_areas.get(w["areaKey"]), self.nodes.get(w["nodeKey"])
+            if a and n and a["z"] is not None and abs(n["z"] - a["z"]) <= AREA_DZ_M:
+                members[a["key"]].append(n)
+        out = []
+        for ak, ns in sorted(members.items()):
+            a, ring = self.walk_areas[ak], _Ring(self.walk_areas[ak]["polygon"])
+            ns = sorted(ns, key=lambda n: n["key"])
+            keep = set()
+            for i, n in enumerate(ns):
+                near = sorted((math.hypot(m["x"] - n["x"], m["y"] - n["y"]), j) for j, m in enumerate(ns) if j != i)
+                picked = 0
+                for _, j in near:
+                    if picked >= AREA_MAX_NEIGHBORS:
+                        break
+                    pair = (min(i, j), max(i, j))
+                    if pair in keep or ring.sees((n["x"], n["y"]), (ns[j]["x"], ns[j]["y"])):
+                        keep.add(pair)
+                        picked += 1
+            for i, j in sorted(keep):
+                p, q = ns[i], ns[j]
+                out.append(
+                    {
+                        "key": f"x:{ak}:{p['key']}:{q['key']}",
+                        "from": p["key"],
+                        "to": q["key"],
+                        "name": a["name"] or None,
+                        "kind": "open_area",
+                        "areaKind": a["kind"],
+                        "direction": "both",
+                        "pedestrianAccess": "allowed",
+                        "wheelchairAccess": "unknown",
+                        "lengthM": round(math.dist((p["x"], p["y"], p["z"]), (q["x"], q["y"], q["z"])), 2),
+                        "stepCount": None,
+                        "widthM": None,
+                        "geometry": [[p["x"], p["y"], p["z"]], [q["x"], q["y"], q["z"]]],
+                        "estimated": True,
+                    }
+                )
+        return out
 
     # ---------- 검색 ----------
     def _building_filter(self, q: str | None):
@@ -140,7 +246,9 @@ class MapIndex:
         if e["pedestrianAccess"] == "unknown":
             c *= 1.2
         if e["kind"] == "vehicle_road":
-            c *= 1.5
+            c *= VEHICLE_ROAD_WALK_FACTOR if e["pedestrianAccess"] == "allowed" else VEHICLE_ROAD_FACTOR
+        if e["kind"] == "open_area":
+            c *= OPEN_AREA_FACTOR
         return c
 
     def route(self, start: str, goal: str, mode: str) -> dict | None:
@@ -213,6 +321,7 @@ class MapIndex:
                 steps.append(
                     {
                         "kind": e["kind"],
+                        **({"areaKind": e["areaKind"]} if e["kind"] == "open_area" else {}),
                         "name": e["name"],
                         "distanceM": e["lengthM"],
                         "edgeKeys": [e["key"]],
@@ -253,6 +362,8 @@ def _instruction(s: dict) -> str:
         return f"승강기로 {_where(s['from'])} → {_where(s['to'])}"
     if s["kind"] == "stairs":
         return f"계단 {'올라가기' if s['dz'] > 0 else '내려가기'} {_where(s['from'])} → {_where(s['to'])}{name}"
-    verb = {"ramp": "경사로", "crossing": "횡단보도 건너기", "corridor": "복도"}.get(s["kind"], "걷기")
     move = f" {_where(s['from'])} → {_where(s['to'])}" if s["floorChange"] else ""
+    if s["kind"] == "open_area":
+        return f"{AREA_LABEL.get(s['areaKind'], '열린 공간')}을 가로질러 {round(s['distanceM'])} m{move}{name}"
+    verb = {"ramp": "경사로", "crossing": "횡단보도 건너기", "corridor": "복도"}.get(s["kind"], "걷기")
     return f"{verb} {round(s['distanceM'])} m{move}{name}"
