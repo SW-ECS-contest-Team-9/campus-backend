@@ -6,7 +6,7 @@ from fastapi.responses import Response
 from database import get_conn
 from errors import ApiError
 from mapdata import store
-from mapdata.routing import MODES
+from mapdata.routing import MODE_SPEC, MODES
 
 router = APIRouter(prefix="/v1")
 
@@ -85,6 +85,12 @@ def _endpoint(idx, s: str, which: str) -> dict:
                 raise ApiError(404, "no_nearby_node", f"{which}: 25 m·높이 차 2 m 안에 길이 없음", {"point": [x, y, z]})
             return {"type": "point", "point": [x, y, z], "nodeKey": n["key"]}
     raise ApiError(400, "bad_endpoint", f"{which} 는 장소 key 또는 'x,y,z'", {which: s})
+
+
+@router.get("/route-modes")
+def route_modes():
+    """경로 방식별 비용 규칙(꾸러미 routeModes 와 같음)."""
+    return {"modes": MODE_SPEC}
 
 
 @router.get("/routes")

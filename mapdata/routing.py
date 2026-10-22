@@ -5,8 +5,8 @@ import math
 import re
 from collections import defaultdict
 
-WALK_MPS = 1.2
-MODES = ("shortest", "avoidStairs", "preferElevator")
+from mapdata.indicators import ELEVATOR_WAIT_S, basic_indicators
+
 ATTACH_RADIUS_M = 25.0
 ATTACH_DZ_M = 2.0
 # 열린 면(광장·운동장 등) 가로지르기: 면 위 노드끼리 면 안에 머무는 직선으로 잇는다(꾸러미에는 없고 읽을 때 만든다).
@@ -16,6 +16,61 @@ OPEN_AREA_FACTOR = 1.02  # 같은 길이면 그려 둔 길(실측 선)을 고르
 VEHICLE_ROAD_FACTOR = 1.5  # 보행 허용이 아닌 차도
 VEHICLE_ROAD_WALK_FACTOR = 1.1  # 보행 허용 차도(보차 혼용): 비슷한 길이면 인도를 고르게 하는 작은 덤
 AREA_LABEL = {"plaza": "광장", "field": "운동장", "parking_aisle": "주차장"}
+
+# 경로 방식별 비용 규칙. 길 하나의 비용 = 기준값(base) × 곱(mult) × 노출 곱(exposure), exclude 에 걸리면 못 지나감.
+#   base       lengthM(길이 m) 또는 walkS(기울기·계단·승강기를 셈한 걷는 시간 s, 가는 방향별)
+#   exclude    stairs(계단), wheelchairNo(휠체어 판정 no: 계단·1/12 넘는 기울기·폭 0.9 m 미만·원천 금지)
+#   mult       stairs, elevator, pedestrianUnknown(보행 통행 모름), vehicleRoadWalk(보행 허용 차도),
+#              vehicleRoad(그 밖 차도), openArea(열린 면 가상 간선), wheelchairSteep(1/18~1/12),
+#              wheelchairUnknown(기울기 모름)
+#   exposure   rain:    × (1 + k × 비 맞는 비율). 지붕 모름은 맞는 것으로 셈
+#              dark:    바깥 길 × (1 + k × 가로등 없는·모르는 비율). 실내는 0
+#              vehicle: 차도(shared)·횡단보도 × (1 + k)
+#   elevatorWaitS  승강기에 탈 때 한 번 더하는 기다림(초). base 가 walkS 일 때만 비용에 들어감
+_COMMON = {"pedestrianUnknown": 1.2, "vehicleRoadWalk": 1.1, "vehicleRoad": 1.5, "openArea": 1.02}
+MODE_SPEC = {
+    "shortest": {"label": "최단 거리", "base": "lengthM", "exclude": [], "mult": dict(_COMMON)},
+    "fastest": {
+        "label": "가장 빠른 길",
+        "base": "walkS",
+        "exclude": [],
+        "mult": dict(_COMMON),
+        "elevatorWaitS": ELEVATOR_WAIT_S,
+        "note": "오르막·계단·승강기 기다림을 셈한 어림 시간. 승강기 기다림 30 초는 어림값",
+    },
+    "avoidStairs": {"label": "계단 없이", "base": "lengthM", "exclude": ["stairs"], "mult": dict(_COMMON)},
+    "accessible": {
+        "label": "휠체어·유모차",
+        "base": "lengthM",
+        "exclude": ["stairs", "wheelchairNo"],
+        "mult": {**_COMMON, "wheelchairSteep": 2.0, "wheelchairUnknown": 1.5},
+        "note": "계단·가파른 길(1/12 넘음)만 기하로 뺐다. 문턱·문 종류·바닥 상태·승강기 운영은 확인 안 됨",
+    },
+    "preferElevator": {
+        "label": "승강기 우선",
+        "base": "lengthM",
+        "exclude": [],
+        "mult": {**_COMMON, "stairs": 4.0, "elevator": 0.5},
+    },
+    "rainProtected": {
+        "label": "비 안 맞는 길",
+        "base": "lengthM",
+        "exclude": [],
+        "mult": dict(_COMMON),
+        "exposure": {"rain": 2.0},
+        "note": "지붕은 실내·지하·구조물 차양 기준(구조물은 추정 포함). 지붕을 모르는 바깥 길은 비 맞는 것으로 셈",
+    },
+    "nightSafe": {
+        "label": "밤에 밝은 길",
+        "base": "lengthM",
+        "exclude": [],
+        "mult": dict(_COMMON),
+        "exposure": {"dark": 1.0, "vehicle": 0.5},
+        "note": "가로등은 사진으로 확인한 곳만 자료에 있음(나머지는 어두운 것으로 셈). 건물 야간 출입은 모름",
+    },
+}
+MODES = tuple(MODE_SPEC)
+_WC_ORDER = ["yes", "likely", "steep", "unknown", "no"]
 
 
 def normalize(s: str) -> str:
@@ -107,6 +162,16 @@ class MapIndex:
             self.edges[e["key"]] = e
             self.out[e["from"]].append((e, e["to"]))
             self.out[e["to"]].append((e, e["from"]))
+        # 지표: 꾸러미에 있으면 그대로, 없으면(옛 꾸러미·열린 면 가상 간선) 길 선으로 계산
+        self.ind = {}
+        for k, e in self.edges.items():
+            i = e.get("indicators")
+            if i is None:
+                indoor = all(self.nodes[x]["location"] == "indoor" for x in (e["from"], e["to"]) if x in self.nodes)
+                i = basic_indicators(e, indoor)
+                if e["kind"] == "open_area":
+                    i["vehicle"] = "shared" if e.get("areaKind") == "parking_aisle" else "none"
+            self.ind[k] = i
 
     def _area_edges(self, area_nodes: list[dict]) -> list[dict]:
         """면마다 같은 높이 노드끼리, 면 안에 머무는 직선이면 가상 간선(kind open_area)."""
@@ -233,52 +298,73 @@ class MapIndex:
                 best, bd = n, d
         return best
 
-    @staticmethod
-    def _cost(e: dict, mode: str) -> float | None:
-        c = e["lengthM"]
-        if e["kind"] == "stairs":
-            if mode == "avoidStairs":
-                return None
-            if mode == "preferElevator":
-                c *= 4
-        if e["kind"] == "elevator" and mode == "preferElevator":
-            c *= 0.5
+    def _cost(self, e: dict, mode: str, reverse: bool, boarding: bool) -> float | None:
+        spec, i = MODE_SPEC[mode], self.ind[e["key"]]
+        if "stairs" in spec["exclude"] and e["kind"] == "stairs":
+            return None
+        if "wheelchairNo" in spec["exclude"] and i.get("wheelchair") == "no":
+            return None
+        m = spec["mult"]
+        if spec["base"] == "walkS":
+            c = i["walkSBack"] if reverse else i["walkS"]
+            if boarding and e["kind"] == "elevator":
+                c += spec.get("elevatorWaitS", 0.0)
+        else:
+            c = e["lengthM"]
+        if e["kind"] in ("stairs", "elevator"):
+            c *= m.get(e["kind"], 1.0)
         if e["pedestrianAccess"] == "unknown":
-            c *= 1.2
+            c *= m["pedestrianUnknown"]
         if e["kind"] == "vehicle_road":
-            c *= VEHICLE_ROAD_WALK_FACTOR if e["pedestrianAccess"] == "allowed" else VEHICLE_ROAD_FACTOR
+            c *= m["vehicleRoadWalk"] if e["pedestrianAccess"] == "allowed" else m["vehicleRoad"]
         if e["kind"] == "open_area":
-            c *= OPEN_AREA_FACTOR
+            c *= m["openArea"]
+        if i.get("wheelchair") == "steep":
+            c *= m.get("wheelchairSteep", 1.0)
+        if i.get("wheelchair") == "unknown":
+            c *= m.get("wheelchairUnknown", 1.0)
+        x = spec.get("exposure", {})
+        if "rain" in x:
+            c *= 1 + x["rain"] * (1 - (i.get("coveredRatio") or 0.0))
+        if "dark" in x and not i.get("indoor"):
+            c *= 1 + x["dark"] * (1 - (i.get("litRatio") or 0.0))
+        if "vehicle" in x and i.get("vehicle") in ("shared", "crossing"):
+            c *= 1 + x["vehicle"]
         return c
 
     def route(self, start: str, goal: str, mode: str) -> dict | None:
-        dist = {start: 0.0}
-        prev: dict[str, tuple[str, dict]] = {}
-        pq = [(0.0, start)]
+        """다익스트라. 상태 = (노드, 승강기 안인지): 승강기 기다림을 탈 때 한 번만 센다."""
+        s0 = (start, False)
+        dist = {s0: 0.0}
+        prev: dict[tuple, tuple[tuple, dict]] = {}
+        pq = [(0.0, start, False)]
+        end = None
         while pq:
-            d, u = heapq.heappop(pq)
+            d, u, riding = heapq.heappop(pq)
             if u == goal:
+                end = (u, riding)
                 break
-            if d > dist.get(u, math.inf):
+            if d > dist.get((u, riding), math.inf):
                 continue
             for e, v in self.out[u]:
-                c = self._cost(e, mode)
+                c = self._cost(e, mode, reverse=v == e["from"], boarding=not riding)
                 if c is None:
                     continue
+                sv = (v, e["kind"] == "elevator")
                 nd = d + c
-                if nd < dist.get(v, math.inf):
-                    dist[v] = nd
-                    prev[v] = (u, e)
-                    heapq.heappush(pq, (nd, v))
-        if goal not in dist:
+                if nd < dist.get(sv, math.inf):
+                    dist[sv] = nd
+                    prev[sv] = ((u, riding), e)
+                    heapq.heappush(pq, (nd, v, sv[1]))
+        if end is None:
             return None
         path_nodes, path_edges = [goal], []
-        cur = goal
-        while cur != start:
-            u, e = prev[cur]
+        cur = end
+        while cur != s0:
+            p, e = prev[cur]
             path_edges.append(e)
-            path_nodes.append(u)
-            cur = u
+            path_nodes.append(p[0])
+            cur = p
         path_nodes.reverse()
         path_edges.reverse()
         return self._describe(path_nodes, path_edges, mode)
@@ -337,17 +423,67 @@ class MapIndex:
             )
             s["dz"] = round(self.nodes[s["toNode"]]["z"] - self.nodes[s["fromNode"]]["z"], 2)
             s["instruction"] = _instruction(s)
-        duration = total / WALK_MPS + sum(20 for e in edges if e["kind"] == "elevator")
+            lm = (self.nodes[s["toNode"]].get("indicators") or {}).get("landmark")
+            if lm:
+                s["landmark"] = lm["name"]
+        summary = self._summary(nodes, edges)
         return {
             "mode": mode,
             "distanceM": round(total, 2),
-            "durationS": round(duration),
+            "durationS": round(summary.pop("_durationS")),
+            "summary": summary,
+            "note": MODE_SPEC[mode].get("note"),
             "stairsEdges": stairs,
             "nodeKeys": nodes,
             "edgeKeys": [e["key"] for e in edges],
             "geometry": geometry,
             "steps": steps,
         }
+
+    def _summary(self, nodes: list[str], edges: list[dict]) -> dict:
+        """경로 전체의 지표 합. 비·조명은 모르는 곳을 나쁜 쪽(비 맞음·어두움)으로 센다."""
+        t = defaultdict(float)
+        rides, riding, steps, wc, max_slope = 0, False, 0, "yes", None
+        for k, e in enumerate(edges):
+            i, rev = self.ind[e["key"]], nodes[k] == e["to"]
+            length = e["lengthM"]
+            t["climbM"] += i["descentM"] if rev else i["climbM"]
+            t["descentM"] += i["climbM"] if rev else i["descentM"]
+            t["_durationS"] += i["walkSBack"] if rev else i["walkS"]
+            if e["kind"] == "elevator":
+                if not riding:
+                    rides += 1
+                    t["_durationS"] += ELEVATOR_WAIT_S
+                riding = True
+            else:
+                riding = False
+            if e["kind"] == "stairs":
+                steps += i.get("steps") or 0
+            if i.get("maxSlopePct") is not None:
+                max_slope = max(max_slope or 0.0, i["maxSlopePct"])
+            t["indoorM" if i.get("indoor") else "outdoorM"] += length
+            t["rainExposedM"] += length * (1 - (i.get("coveredRatio") or 0.0))
+            if i.get("coveredRatio") is None:
+                t["coverUnknownM"] += length
+            if not i.get("indoor"):
+                t["litOutdoorM"] += length * (i.get("litRatio") or 0.0)
+            if i.get("vehicle") == "shared":
+                t["vehicleSharedM"] += length
+            t["crossings"] += i.get("vehicle") == "crossing"
+            w = i.get("wheelchair") or "unknown"
+            if _WC_ORDER.index(w) > _WC_ORDER.index(wc):
+                wc = w
+        keys = ["climbM", "descentM", "indoorM", "outdoorM", "rainExposedM", "coverUnknownM", "litOutdoorM"]
+        out = {k: round(t[k], 1) for k in keys + ["vehicleSharedM"]}
+        out.update(
+            steps=steps,
+            maxSlopePct=max_slope,
+            crossings=int(t["crossings"]),
+            elevatorRides=rides,
+            wheelchair=wc,
+            _durationS=t["_durationS"],
+        )
+        return out
 
 
 def _where(lbl: dict) -> str:

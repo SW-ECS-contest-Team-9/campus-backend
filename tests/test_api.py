@@ -134,3 +134,19 @@ def test_route_xyz_and_errors(client, published):
 def test_cors(client, published):
     r = client.get("/v1/map/releases/latest", headers={"Origin": "http://localhost:8081"})
     assert r.headers["access-control-allow-origin"] == "http://localhost:8081"
+
+
+def test_route_all_modes_with_summary(client, published):
+    for mode in ("fastest", "accessible", "rainProtected", "nightSafe"):
+        r = client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": mode})
+        assert r.status_code == 200, mode
+        body = r.json()
+        assert body["mode"] == mode and {"climbM", "steps", "rainExposedM", "wheelchair"} <= set(body["summary"])
+    r = client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": "accessible"}).json()
+    assert "stairs" not in [s["kind"] for s in r["steps"]] and r["note"]
+
+
+def test_route_modes_spec(client):
+    spec = client.get("/v1/route-modes").json()
+    assert spec["modes"]["rainProtected"]["exposure"] == {"rain": 2.0}
+    assert spec["modes"]["accessible"]["exclude"] == ["stairs", "wheelchairNo"]
