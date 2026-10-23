@@ -53,6 +53,9 @@ BAND_WALK_M, BAND_SHARED_M = 2.0, 3.0  # 폭 모를 때 기본값
 BAND_KINDS = {"walkway", "sidewalk", "crossing", "vehicle_road", "ramp"}
 MIN_BAND_M2 = 1.0
 CORRIDOR_M = 2.4  # 실내 빈 곳이 없는 복도 띠 폭(폭 모를 때)
+INDOOR_NARROW_M = 1.8  # 실내 바닥에 이보다 좁은 띠(빈 곳·복도)가 있으면 0.5 m 칸(1 m 칸은 반쯤만 덮음)
+NARROW_MIN_AREA = 1.0  # 좁은 띠로 칠 넓이(㎡). 모서리 부스러기는 안 셈
+RAMP_KINDS = {"ramp", "corridor"}  # 높이 차 STEP_OK_M 넘는 이 길은 평평한 실내 바닥 그물에서 뺀다(길 간선으로만)
 VOID_KINDS = {"corridor", "lobby", "link"}  # interiors.geojson 에서 걷는 바닥인 빈 곳(계단실·승강기 통로는 아님)
 SEAM_TOL_M = 0.05  # 이음 선분이 두 면 외곽 밖으로 이만큼까지 나가도 안으로 본다(맞닿은 경계)
 AREA_CUT_DZ_M = 1.8  # 열린 면과 겹친 걷는 면 높이 차가 이 안이면 같은 바닥(걷는 면이 이김), 넘으면 위·아래 다른 층
@@ -146,7 +149,7 @@ def _geom(polygons: list):
 
 
 def _frame(geom, top: dict | None) -> tuple[list[float], list[float]]:
-    """(원점, 축 단위 벡터). 원점은 축 좌표계에서 면의 최소 모서리(cm 반올림)."""
+    """(원점, 축 단위 벡터). 원점은 축 좌표계에서 면의 최소 모서리(mm 반올림)."""
     if top and "profile" in top:
         dx, dy = top["profile"]["direction"]
     else:
@@ -165,8 +168,9 @@ def _frame(geom, top: dict | None) -> tuple[list[float], list[float]]:
     xy = shapely.get_coordinates(geom.boundary) - np.array([rx, ry])
     a = xy[:, 0] * ux + xy[:, 1] * uy
     b = -xy[:, 0] * uy + xy[:, 1] * ux
-    a0, b0 = math.floor(a.min() * 100) / 100, math.floor(b.min() * 100) / 100
-    origin = [round(rx + a0 * ux - b0 * uy, 2), round(ry + a0 * uy + b0 * ux, 2)]
+    # mm 로 내림·반올림: cm 로 하면 원점이 면에서 1~2 cm 떨어져 첫 줄 칸이 덮음 여유(COVER_TOL_M) 밖으로 빠진다
+    a0, b0 = math.floor(a.min() * 1000) / 1000, math.floor(b.min() * 1000) / 1000
+    origin = [round(rx + a0 * ux - b0 * uy, 3), round(ry + a0 * uy + b0 * ux, 3)]
     return origin, [ux, uy]
 
 
@@ -521,7 +525,8 @@ def build_entries(
             outlines.append(g)
     if keys is None:
         for f in floor_planes(content, interiors):
-            grid = build_grid(f["geom"], None, [CELL_NARROW_M, CELL_TINY_M])
+            cells = [CELL_TINY_M] if _has_narrow(f["geom"]) else [CELL_NARROW_M, CELL_TINY_M]
+            grid = build_grid(f["geom"], None, cells)
             if not any(grid["codes"]):
                 continue
             outlines.append(f["geom"])
@@ -609,9 +614,18 @@ def _add_seams(entries: list[dict], outlines: list, edges: dict, classes: list[d
             e["seams"] = [[entries[bi]["key"], flat] for bi, flat in sorted(per[ai].items())]
 
 
+def _has_narrow(geom) -> bool:
+    """INDOOR_NARROW_M 보다 좁은 띠가 NARROW_MIN_AREA 넘게 있나(모난 열림: 그 폭 정사각형이 못 지나는 곳)."""
+    r = INDOOR_NARROW_M / 2
+    wide = geom.buffer(-r, join_style="mitre").buffer(r, join_style="mitre")
+    return geom.difference(wide).area > NARROW_MIN_AREA
+
+
 def floor_planes(content: dict, interiors: list[dict] | None) -> list[dict]:
     """실내 층 바닥: (층, 높이)마다 빈 곳 다각형(복도·로비·연결 통로) + 빈 곳이 없는 평평한 복도 길 띠.
-    빈 곳 높이는 그 층 floorsM, 길 띠 높이는 길 높이. 같은 층에서 높이 차 STEP_OK_M 안이면 한 바닥."""
+    빈 곳 높이는 그 층 floorsM, 길 띠 높이는 길 높이. 같은 층에서 높이 차 STEP_OK_M 안이면 한 바닥.
+    빈 곳이 덮은 경사로(RAMP_KINDS, 높이 차 STEP_OK_M 넘음)는 그 폭만큼(끝은 평평하게) 바닥에서 뺀다. 높이 범위가
+    바닥 높이와 STEP_OK_M 안으로 겹칠 때만(위·아래로 지나는 길은 안 뺌). 경사로는 길 간선으로 간다."""
     from mapdata.transform import floor_code
 
     def norm(name):
@@ -659,15 +673,36 @@ def floor_planes(content: dict, interiors: list[dict] | None) -> list[dict]:
         if max(zs) - min(zs) > STEP_OK_M or line.length <= 0:  # 기운 복도는 길 간선으로만
             continue
         add(a["floorKey"], round(sum(zs) / len(zs), 2), line.buffer((e.get("widthM") or CORRIDOR_M) / 2))
+    ramps: dict[str, list] = defaultdict(list)
+    for e in sorted(content["edges"], key=lambda e: e["key"]):
+        a, b = nodes[e["from"]], nodes[e["to"]]
+        zs = [q[2] for q in e["geometry"]]
+        if (
+            e["kind"] not in RAMP_KINDS
+            or e["pedestrianAccess"] == "prohibited"
+            or "indoor" not in (a["location"], b["location"])
+            or max(zs) - min(zs) <= STEP_OK_M
+        ):
+            continue
+        line = LineString([q[:2] for q in e["geometry"]])
+        foot = line.buffer((e.get("widthM") or CORRIDOR_M) / 2, cap_style="flat")
+        for fk in {a["floorKey"], b["floorKey"]} - {None}:
+            ramps[fk].append((min(zs) - STEP_OK_M, max(zs) + STEP_OK_M, foot))
     out = []
     for fk in sorted(groups):
         gs = sorted(groups[fk], key=lambda g: g["z"])
         for g in gs:
+            geom = unary_union(g["parts"])
+            cut = [foot for lo, hi, foot in ramps.get(fk, []) if lo <= g["z"] <= hi]
+            if cut:
+                geom = geom.difference(unary_union(cut))
+            if geom.area < 1.0:
+                continue
             out.append(
                 {
                     "key": f"m:i:{fk[2:]}" + (f"@{g['z']}" if len(gs) > 1 else ""),
                     "top": {"z": g["z"]},
-                    "geom": unary_union(g["parts"]),
+                    "geom": geom,
                     "floorKey": fk,
                     "buildingKey": fkeys[fk]["buildingKey"],
                 }

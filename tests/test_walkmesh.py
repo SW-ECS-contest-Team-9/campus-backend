@@ -75,8 +75,8 @@ def test_narrow_strip_uses_1m_and_tiny_face_uses_half_metre():
         pkg({}, [], surfaces=[surface("s:1", [[[[0, 0], [30, 0], [30, 1.5], [0, 1.5]]]], {"z": 100.0})])
     )
     assert strip[0]["cell"] == 1.0
-    # 0.9 m 폭 띠를 비스듬히: 1 m 칸으로는 거의 안 덮인다 → 0.5 m
-    tilted = [[0, 0], [20, 14], [19.48, 14.74], [-0.52, 0.74]]
+    # 0.95 m 폭 띠를 비스듬히: 1 m 칸으로는 아래 세모 한 줄(26 %)만 덮인다 → 0.5 m
+    tilted = [[0, 0], [20, 14], [19.455, 14.778], [-0.545, 0.778]]
     tiny = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[tilted]], {"z": 100.0})]))[0][0]
     assert tiny["cell"] == 0.5 and tiny["cover"] > 0.27
 
@@ -411,9 +411,10 @@ def test_line_does_not_cut_through_thin_wall_between_two_meshes():
 # ---------- 실내 층 그물 ----------
 
 
-def indoor_case(outdoor=False, door=False):
-    """X 동 1F(100 m) 로비 빈 곳 20 × 10 m(복도 e:aaaaaaaa 를 덮음), 2F(104 m)는 빈 곳 없는 복도 e:bbbbbbbb(띠),
-    계단 e:cccccccc 이 잇는다. outdoor 면 s:o 는 로비 서쪽에 같은 높이로 맞닿음, door 는 문 길."""
+def indoor_case(outdoor=False, door=False, lobby_h=10.0, ramp=False):
+    """X 동 1F(100 m) 로비 빈 곳 20 × lobby_h m(복도 e:aaaaaaaa 를 덮음), 2F(104 m)는 빈 곳 없는 복도 e:bbbbbbbb(띠),
+    계단 e:cccccccc 이 잇는다. outdoor 면 s:o 는 로비 서쪽에 같은 높이로 맞닿음, door 는 문 길.
+    ramp 는 로비 안 경사로 e:dddddddd(x 5 → 15, y 2, 100.0 → 100.6, 폭 1.5 m)를 더하고 빈 곳 roads 에 넣는다."""
     n = {
         "a1": node("a1", 1, 5, 100.0, "indoor"),
         "s1": node("s1", 18, 5, 100.0, "indoor"),
@@ -432,6 +433,13 @@ def indoor_case(outdoor=False, door=False):
     if outdoor:  # 바깥 면 위 노드 o(면 위 점이 막힌 조각으로 안 보이게)
         surfs.append(surface("s:o", [[[[-10, 0], [0, 0], [0, 10], [-10, 10]]]], {"z": 100.0}))
         n["o"] = node("o", -8, 2, 100.0)
+    if ramp:
+        n["r1"] = node("r1", 5, 2, 100.0, "indoor")
+        n["r2"] = node("r2", 15, 2, 100.6, "indoor")
+        for k in ("r1", "r2"):
+            n[k].update(buildingKey="b:X", floorKey="f:X:1F")
+        es.append(edge("e:dddddddd-1", "r1", "r2", n, kind="ramp"))
+        es[-1]["widthM"] = 1.5
     if door:
         n["d"] = node("d", -0.5, 5, 100.0)
         n["i"] = node("i", 0.5, 5, 100.0, "indoor")
@@ -449,8 +457,8 @@ def indoor_case(outdoor=False, door=False):
             "kind": "lobby",
             "floors": ["1층"],
             "floorsM": [100.0],
-            "roads": ["aaaaaaaa"],
-            "polygons": [[[[0, 0], [20, 0], [20, 10], [0, 10]]]],
+            "roads": ["aaaaaaaa"] + (["dddddddd"] if ramp else []),
+            "polygons": [[[[0, 0], [20, 0], [20, lobby_h], [0, lobby_h]]]],
         },
         {  # 계단실은 걷는 바닥이 아니다
             "building": "X",
@@ -520,10 +528,37 @@ def tilted_strip(x0, y0, length, width, d=(0.908682, -0.41749)):
 
 
 def test_grid_origin_sits_on_face_corner_at_large_coordinates():
-    """5186 큰 좌표에서도 원점이 면의 축 좌표 최소 모서리에 놓인다(축 반올림으로 0.5 m 어긋나 반만 덮이던 것)."""
-    ring = tilted_strip(201089.0, 557356.0, 30.0, 2.4)
-    e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[ring]], {"z": 100.0})]))[0][0]
-    m = walkmesh.Mesh(e, {}, [])
-    ab = [m.local(x, y) for x, y in ring]
-    assert min(a for a, _ in ab) > -0.02 and min(b for _, b in ab) > -0.02
-    assert e["cover"] > 0.8
+    """5186 큰 좌표에서도 원점이 면의 축 좌표 최소 모서리(1 cm 안)에 놓인다. 축 반올림으로 0.5 m, 원점 cm 반올림으로
+    1~2 cm 어긋나면 2.4 m 복도의 1 m 칸 한 줄이 빠져 반만 덮였다(문예관 복도)."""
+    for k in range(10):
+        ring = tilted_strip(201088.91 + k * 0.0037, 557356.41 + k * 0.0061, 30.0, 2.4)
+        e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[ring]], {"z": 100.0})]))[0][0]
+        m = walkmesh.Mesh(e, {}, [])
+        ab = [m.local(x, y) for x, y in ring]
+        assert -0.01 < min(a for a, _ in ab) * e["cell"] < 0.01 and -0.01 < min(b for _, b in ab) * e["cell"] < 0.01
+        assert e["cover"] > 0.8
+
+
+def floor_mesh(p, key="m:i:X:1F"):
+    e = next(e for e in p["walkMeshes"] if e["key"] == key)
+    return e, walkmesh.Mesh(e, {x["key"]: x for x in p["edges"]}, p["walkMeshClasses"])
+
+
+def test_narrow_indoor_corridor_uses_half_metre_cells():
+    """1.8 m 보다 좁은 실내 띠(빈 곳·복도)가 있는 층은 0.5 m 칸(1 m 칸은 반쯤만 덮음). 넓으면 1 m 그대로."""
+    e, _ = floor_mesh(indoor_case(lobby_h=1.5))
+    assert e["cell"] == 0.5 and e["cover"] > 0.8
+    e, _ = floor_mesh(indoor_case(lobby_h=2.4))
+    assert e["cell"] == 1.0
+
+
+def test_ramp_under_void_is_cut_out_of_flat_floor_and_kept_as_edge():
+    """빈 곳이 덮은 경사로(높이 차 0.2 m 넘음)는 평평한 바닥 그물에서 경사로 폭만큼 뺀다. 경사로는 길 간선으로 간다."""
+    p = indoor_case(ramp=True)
+    _, m = floor_mesh(p)
+    assert m.usable(10.0, 2.0) is None and m.usable(4.0, 2.0) is not None and m.usable(10.0, 6.0) is not None
+    r = MapIndex(p).mesh
+    out = go(r, (3.0, 2.0, 100.0), (16.5, 2.0, 100.0))
+    assert out is not None and "e:dddddddd-1" not in out["edgeKeys"]  # 평평한 바닥으로 경사로를 돌아감
+    up = MapIndex(p).route("r1", "r2", "shortest")
+    assert up is not None and "e:dddddddd-1" in up["edgeKeys"]
