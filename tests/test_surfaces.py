@@ -486,3 +486,10 @@ def test_validate_counts_surface_crossings_as_connected():
     c, _ = transform.build(s)
     p = {**c, "places": [], "floors": [], "buildings": []}
     assert release.validate(p)["components"] == [4]  # 두 길이 면 가로지르기로 한 덩어리
+
+
+def test_point_at_a_node_uses_that_node():
+    n, e = sloped_square()
+    idx = MapIndex(pkg(n, e, surfaces=[surface("s:1", [[SQ]], SLOPE_X)], surface_nodes=members("s:1", n)))
+    r, ends = idx.route_points((20.0, 0.0, 102.0), "d", "shortest")
+    assert ends[0] == {"nodeKey": "b", "attached": "node"} and r["nodeKeys"][0] == "b"

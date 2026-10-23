@@ -11,6 +11,7 @@ from mapdata.surfaces import surface_z
 
 ATTACH_RADIUS_M = 25.0
 ATTACH_DZ_M = 2.0
+NODE_AT_M = 0.05  # 점이 노드에서 이만큼 안이면 그 노드
 # 열린 면(광장·운동장 등) 가로지르기: 면 위 노드끼리 면 안에 머무는 직선으로 잇는다(꾸러미에는 없고 읽을 때 만든다).
 AREA_DZ_M = 0.5  # 면 높이와 노드 높이 차 한도. 넘으면 다른 단이라 잇지 않는다(단 사이는 벽).
 AREA_MAX_NEIGHBORS = 12  # 노드마다 가까운 이웃 몇 개까지만(면 노드가 많아도 간선 수가 n² 로 늘지 않게)
@@ -348,6 +349,10 @@ class MapIndex:
                 ends.append({"nodeKey": spec, "attached": "node"} if spec in self.nodes else None)
                 continue
             x, y, z = (float(v) for v in spec)
+            at = self.node_at(x, y, z)
+            if at:  # 노드 자리(앱이 노드 좌표로 보낸 출발 등)는 그 노드
+                ends.append({"nodeKey": at["key"], "attached": "node"})
+                continue
             hits = self._point_on(x, y, z)
             if hits:
                 zs = min(hits, key=lambda h: h[0])[1]
@@ -468,6 +473,13 @@ class MapIndex:
             if d < bd:
                 best, bd = n, d
         return best
+
+    def node_at(self, x: float, y: float, z: float) -> dict | None:
+        """(x, y, z) 에서 NODE_AT_M 안(3D)의 첫 노드(꾸러미 순서)."""
+        for n in self.nodes.values():
+            if math.dist((n["x"], n["y"], n["z"]), (x, y, z)) <= NODE_AT_M:
+                return n
+        return None
 
     def _cost(self, e: dict, mode: str, reverse: bool, boarding: bool) -> float | None:
         spec, i = MODE_SPEC[mode], self.ind[e["key"]]
