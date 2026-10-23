@@ -7,6 +7,8 @@
   지표에 구조물(계단 단·차양·기단·가로등)을 쓰려면 --structures C:/campus-tracker/frontend/public/structures
   기단 면 가로지르기(기울어진 면 포함)는 --structures 와 --walkable mapdata/data/walkable-areas-5186.geojson
   둘 다 안 주면 기본 경로(DEFAULT_STRUCTURES, DEFAULT_WALKABLE)가 있을 때 그것을 쓴다(공개할 때 걷는 면이 빠지지 않게).
+  실내 층 그물의 빈 곳(복도·로비 다각형)은 --interiors <트래커>/frontend/public/interiors.geojson (기본 DEFAULT_INTERIORS).
+  없으면 실내 복도 길을 2.4 m 띠로만 덮는다.
 """
 
 import argparse
@@ -17,25 +19,28 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from database import connect  # noqa: E402
-from mapdata import indicators, release, sources, surfaces, transform  # noqa: E402
+from mapdata import indicators, release, sources, surfaces, transform, walkmesh  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STRUCTURES = Path("C:/campus-tracker-testdb/frontend/public/structures")  # 시험용 트래커 체크아웃
 DEFAULT_WALKABLE = ROOT / "mapdata" / "data" / "walkable-areas-5186.geojson"  # 저장소에 있음(WALK02 뒤 판)
+DEFAULT_INTERIORS = Path("C:/campus-tracker-testdb/frontend/public/interiors.geojson")  # 시험용 트래커 체크아웃
 
 
-def with_defaults(structures, walkable, log=print):
-    """주지 않은 --structures·--walkable 을 기본 경로로 채운다(있을 때만). 무엇을 썼는지 한 줄씩 남긴다."""
+def with_defaults(structures, walkable, interiors, log=print):
+    """주지 않은 --structures·--walkable·--interiors 를 기본 경로로 채운다(있을 때만). 무엇을 썼는지 한 줄씩 남긴다."""
     out = []
     for name, given, default in (
         ("structures", structures, DEFAULT_STRUCTURES),
         ("walkable", walkable, DEFAULT_WALKABLE),
+        ("interiors", interiors, DEFAULT_INTERIORS),
     ):
         if not given and default.exists():
             log(f"[import_release] --{name} 기본값 사용: {default}")
             given = str(default)
         elif not given:
-            log(f"[import_release] --{name} 없음, 기본 경로도 없음({default}): 걷는 면 없이 가져옴")
+            what = "실내는 복도 띠로만 덮음" if name == "interiors" else "걷는 면 없이 가져옴"
+            log(f"[import_release] --{name} 없음, 기본 경로도 없음({default}): {what}")
         out.append(given)
     return tuple(out)
 
@@ -52,6 +57,9 @@ def main(argv=None) -> int:
     ap.add_argument(
         "--walkable", help="사람이 다니는 곳 외곽 GeoJSON(5186). --structures 와 함께 주면 기단 면(walkSurfaces)을 만듦"
     )
+    ap.add_argument(
+        "--interiors", help="트래커 실내 빈 곳 GeoJSON(frontend/public/interiors.geojson, 5186). 실내 층 그물 바닥에 씀"
+    )
     ap.add_argument("--report", help="보고서 JSON 저장 경로")
     a = ap.parse_args(argv)
 
@@ -67,13 +75,18 @@ def main(argv=None) -> int:
             label = f"campus-tracker export {Path(a.export).stem}"
         else:
             ap.error("--api 또는 --export 가 필요함")
-        a.structures, a.walkable = with_defaults(a.structures, a.walkable, lambda m: print(m, file=sys.stderr))
+        a.structures, a.walkable, a.interiors = with_defaults(
+            a.structures, a.walkable, a.interiors, lambda m: print(m, file=sys.stderr)
+        )
         if a.structures:
             src["structures"] = indicators.load_structures(a.structures)
             src["meta"]["structures"] = a.structures
         if a.walkable:
             src["walkable"] = surfaces.load_walkable(a.walkable)
             src["meta"]["walkable"] = a.walkable
+        if a.interiors:
+            src["interiors"] = walkmesh.load_interiors(a.interiors)
+            src["meta"]["interiors"] = a.interiors
         content, rep = transform.build(src)
         rid = release.create_draft(conn, content, rep, {"label": label, **src["meta"]})
         conn.commit()
