@@ -160,7 +160,7 @@ def test_route_from_point_on_walk_surface(client, clean):
     body = r.json()
     assert body["from"]["type"] == "point" and body["from"]["attached"] == "surface"
     assert body["from"]["nodeKey"] == "q:from" and body["steps"][0]["kind"] == "open_area"
-    assert body["to"]["attached"] == "surface"
+    assert body["to"]["attached"] == "node"  # 도착 점이 노드 c 자리
 
 
 def test_route_modes_spec(client):
