@@ -55,7 +55,12 @@ ENTRANCE_EVERY = 4  # 구역 경계 열린 줄에서 입구 간격(꼭짓점 수
 LOS_STEP = 0.25  # 직선 보기 표본 간격(칸 크기 배수)
 PPM = 1_000_000
 S_BIT, E_BIT, N_BIT, W_BIT = 1, 2, 4, 8
-_ASTAR_MODES = {k for k, v in MODE_SPEC.items() if v["base"] == "lengthM" and min(v["mult"].values()) >= 1.0}
+WALK_MIN_S_PER_M = 0.69  # 가장 빠른 걷기(Tobler 내리막 5 %, 1.43 m/s) 1 m 시간보다 조금 작게
+# A* 어림값 계수(ppm): 3D 거리 × 이 방식에서 가장 싼 1 m 비용(곱 가운데 가장 작은 것, 1 넘으면 1) × 0.99
+H_PPM = {
+    k: math.floor(min([1.0, *v["mult"].values()]) * (WALK_MIN_S_PER_M if v["base"] == "walkS" else 1.0) * 0.99 * PPM)
+    for k, v in MODE_SPEC.items()
+}
 
 
 # ---------- 공용 계산(앱과 같은 식) ----------
@@ -772,6 +777,7 @@ class MeshRouter:
             self.live[b].add(self.meshes[b].comp[vb])
         self._gates()
         self._tables()
+        self._pkg_cost: dict = {}  # 방식 → (길 key, 거꾸로, 승강기 안) → 정수 비용|None
         self.build_ms = round((time.perf_counter() - t0) * 1000)
 
     # ----- 그물 사이 이음 -----
@@ -1109,52 +1115,62 @@ class MeshRouter:
         return extra
 
     def _search(self, start: int, goal: int, mode: str, mode_i: int, tmp: dict, extra: dict):
+        """A*: 상태 = (점, 승강기 안인지), 키 점×2+승강기. 어림값 = 3D 거리 × 이 방식에서 가장 싼 1 m 비용(H_PPM)."""
         gx = self.xyz_of(goal, tmp)
-        use_h = mode in _ASTAR_MODES
+        hppm = H_PPM[mode]
+        hcache: dict = {}
+        pcost = self._pkg_cost.setdefault(mode_i, {})
+        nn, aadj, nkeys = self.n_abs, self.aadj, self.nkeys
+        no_extra: list = []
 
         def h(a):
-            if not use_h:
-                return 0
-            p = self.xyz_of(a, tmp)
-            return dist_mm(p, gx) * 99 // 100
+            v = hcache.get(a)
+            if v is None:
+                v = hcache[a] = dist_mm(self.xyz_of(a, tmp), gx) * hppm // PPM
+            return v
 
-        dist = {(start, 0): 0}
+        dist = {start * 2: 0}
         prev = {}
         pq = [(h(start), start, 0, 0)]
         end = None
         while pq:
             _, u, riding, d = heapq.heappop(pq)
-            if d > dist[(u, riding)]:
+            if d > dist[u * 2 + riding]:
                 continue
             if u == goal:
-                end = (u, riding)
+                end = u * 2 + riding
                 break
-            for v, info, cs in [*self.aadj[u], *extra.get(u, [])] if u < self.n_abs else extra.get(u, []):
-                if info[0] == "edge":
-                    e = info[1]
-                    c = self.idx._cost(e, mode, reverse=self.nkeys[v] == e["from"], boarding=not riding)
-                    if c is None:
-                        continue
-                    c = mm(c)
-                    nr = 1 if e["kind"] == "elevator" else 0
-                else:
-                    c = cs[mode_i] if isinstance(cs, list) else cs
-                    if c is None:
-                        continue
-                    nr = 0
-                nd = d + c
-                sv = (v, nr)
-                if nd < dist.get(sv, math.inf):
-                    dist[sv] = nd
-                    prev[sv] = ((u, riding), info)
-                    heapq.heappush(pq, (nd + h(v), v, nr, nd))
+            for lst in (aadj[u] if u < nn else no_extra, extra.get(u, no_extra)):
+                for v, info, cs in lst:
+                    if info[0] == "edge":
+                        e = info[1]
+                        rev = nkeys[v] == e["from"]
+                        ck = (e["key"], rev, riding)
+                        c = pcost.get(ck, -1)
+                        if c == -1:
+                            c = self.idx._cost(e, mode, reverse=rev, boarding=not riding)
+                            c = pcost[ck] = None if c is None else mm(c)
+                        if c is None:
+                            continue
+                        nr = 1 if e["kind"] == "elevator" else 0
+                    else:
+                        c = cs[mode_i] if type(cs) is list else cs
+                        if c is None:
+                            continue
+                        nr = 0
+                    nd = d + c
+                    sv = v * 2 + nr
+                    if nd < dist.get(sv, math.inf):
+                        dist[sv] = nd
+                        prev[sv] = (u * 2 + riding, info)
+                        heapq.heappush(pq, (nd + h(v), v, nr, nd))
         if end is None:
             return None
         steps = []
         cur = end
         while cur in prev:
             p, info = prev[cur]
-            steps.append((p[0], cur[0], info))
+            steps.append((p // 2, cur // 2, info))
             cur = p
         steps.reverse()
         return {"start": start, "goal": goal, "steps": steps, "cost": dist[end]}
