@@ -243,6 +243,7 @@ def parse_structures(features: list[dict]) -> dict:
         "platforms": [],
         "stairs": defaultdict(list),
         "lamps": [],
+        "solids": [],  # 높이가 있는 구조물 전부(벽·화단·턱·계단 단·나무 등): 걷는 면에서 솟은 것은 뺀다
         "count": len(features),
     }
     for f in features:
@@ -250,6 +251,8 @@ def parse_structures(features: list[dict]) -> dict:
         t, kind = p.get("type"), p.get("kind")
         for ring in _rings(f.get("geometry") or {"type": None}):
             item = {"id": p.get("id"), "ring": ring, "bbox": _bbox(ring), "fromM": p.get("fromM"), "toM": p.get("toM")}
+            if kind == "extrude":
+                s["solids"].append({**item, "type": t})
             if kind == "platform":
                 item.update(topM=p.get("topM"), topProfile=p.get("topProfile"), material=p.get("material"))
                 s["platforms"].append(item)

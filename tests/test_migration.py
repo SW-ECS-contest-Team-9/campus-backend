@@ -5,7 +5,19 @@ from alembic import command
 import database
 from conftest import alembic_cfg
 
-TABLES = {"campus", "map_release", "building", "floor", "node", "edge", "place", "walk_area", "walk_area_node"}
+TABLES = {
+    "campus",
+    "map_release",
+    "building",
+    "floor",
+    "node",
+    "edge",
+    "place",
+    "walk_area",
+    "walk_area_node",
+    "walk_surface",
+    "walk_surface_node",
+}
 
 
 def tables():

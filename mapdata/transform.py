@@ -7,7 +7,7 @@ import math
 import re
 from collections import Counter, defaultdict
 
-from mapdata import indicators
+from mapdata import indicators, surfaces
 
 FLOOR_TOL_M = 1.5  # 높이로 층을 정할 때 허용 차
 PLACE_DZ_M = 2.0  # 장소-노드 높이 차 한도
@@ -183,6 +183,7 @@ def build(src: dict) -> tuple[dict, dict]:
                 "footprint": foot,
                 "_ground": main.get("ground_floors") or (len(codes) - under if codes else None),
                 "_under": under if codes else None,
+                "_rings": rings,
             }
         )
     bld_keys = {b["key"] for b in buildings}
@@ -418,6 +419,22 @@ def build(src: dict) -> tuple[dict, dict]:
             ):
                 area_nodes.append({"areaKey": ak, "nodeKey": n["key"]})
 
+    # ---- 기단 면(사람이 다니는 곳 외곽 안, 구조물 기단에서) ----
+    walk, structs = src.get("walkable"), src.get("structures")
+    surf, surf_nodes, surf_rep = [], [], None
+    if walk and structs:
+        surf, surf_nodes, surf_rep = surfaces.build(
+            structs.get("platforms", []),
+            structs.get("solids", []),
+            walk["outline"],
+            [r for b in buildings for r in b.get("_rings") or []],
+            walk.get("zones", []),
+            nodes,
+        )
+        surf_rep["walkableFile"] = walk.get("file")
+    elif walk:
+        unf("walkable_without_structures", "걷는 곳 외곽은 있는데 구조물이 없어 기단 면을 못 만듦")
+
     content = {
         "buildings": buildings,
         "floors": floors,
@@ -426,8 +443,10 @@ def build(src: dict) -> tuple[dict, dict]:
         "places": places,
         "walkAreas": areas,
         "walkAreaNodes": area_nodes,
+        "walkSurfaces": surf,
+        "walkSurfaceNodes": surf_nodes,
     }
-    structs = src.get("structures")
+    rep["surfaces"] = surf_rep
     rep["indicators"] = indicators.annotate(content, structs)
     rep["indicators"]["structureFiles"] = structs.get("files") if structs else None
     rep["counts"] = {k: len(v) for k, v in content.items()}
