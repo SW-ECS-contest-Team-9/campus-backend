@@ -349,3 +349,77 @@ def test_transform_splits_road_through_surface_without_nodes():
     assert {w["nodeKey"] for w in c["walkSurfaceNodes"]} == {"n:rx~1", "n:rx~2"}
     assert all(e.get("indicators") for e in c["edges"])  # 나눈 길도 지표가 있다
     assert rep["surfaces"]["boundaryNodes"] == 2
+
+
+# ---------- 면 위 아무 점에서 출발·도착 (읽을 때) ----------
+
+
+def test_point_on_surface_without_nodes_inside_connects_to_surface_nodes():
+    n, e = sloped_square()
+    idx = MapIndex(pkg(n, e, surfaces=[surface("s:1", [[SQ]], SLOPE_X)], surface_nodes=members("s:1", n)))
+    r, ends = idx.route_points((10.0, 5.0, 101.0), "c", "shortest")
+    assert ends[0]["attached"] == "surface" and ends[0]["nodeKey"] == "q:from"
+    assert r["nodeKeys"] == ["q:from", "c"] and r["edgeKeys"] == ["y:s:1:q:from:c"]
+    assert r["steps"][0]["kind"] == "open_area"
+    assert math.isclose(r["distanceM"], math.sqrt(10**2 + 15**2 + 1**2), abs_tol=0.02)
+    assert r["geometry"][0] == [10.0, 5.0, 101.0]
+
+
+def test_point_z_snaps_to_surface_and_wrong_height_falls_back_to_nearest_node():
+    n, e = sloped_square()
+    idx = MapIndex(pkg(n, e, surfaces=[surface("s:1", [[SQ]], SLOPE_X)], surface_nodes=members("s:1", n)))
+    r, ends = idx.route_points((10.0, 5.0, 101.3), "c", "shortest")
+    assert ends[0]["attached"] == "surface" and r["geometry"][0][2] == 101.0
+    r, ends = idx.route_points((1.0, 1.0, 101.8), "c", "shortest")  # 면보다 1.7 m 위: 면이 아님 → 가까운 노드
+    assert ends[0] == {"nodeKey": "a", "attached": "nearest_node"}
+    assert r["nodeKeys"][0] == "a"
+    assert idx.route_points((500.0, 500.0, 100.0), "c", "shortest") == (
+        None,
+        [None, {"nodeKey": "c", "attached": "node"}],
+    )
+
+
+def test_two_points_on_same_surface_join_directly_and_holes_block():
+    hole = [[8, 8], [12, 8], [12, 12], [8, 12]]
+    n = {k: node(k, x, y) for k, x, y in [("s", 10, 2), ("t", 10, 18)]}
+    idx = MapIndex(pkg(n, [], surfaces=[surface("s:1", [[SQ, hole]], {"z": 100.0})], surface_nodes=members("s:1", n)))
+    r, _ = idx.route_points((2.0, 2.0, 100.0), (18.0, 2.0, 100.0), "shortest")
+    assert r["edgeKeys"] == ["y:s:1:q:to:q:from"] and r["distanceM"] == 16.0
+    r, _ = idx.route_points((2.0, 10.0, 100.0), (18.0, 10.0, 100.0), "shortest")  # 구멍이 가운데를 막음
+    assert "y:s:1:q:to:q:from" not in r["edgeKeys"] and r["nodeKeys"][1] in ("s", "t")
+
+
+def test_point_in_open_area_prefers_area_edge_on_same_pair():
+    n, e = sloped_square()
+    for k in n:
+        n[k]["z"] = 100.0
+    area = {
+        "key": "a:1",
+        "location": "outdoor",
+        "floorKey": None,
+        "name": "광장",
+        "kind": "plaza",
+        "polygon": SQ,
+        "z": 100.0,
+        "estimated": False,
+    }
+    p = pkg(
+        n,
+        e,
+        [area],
+        [{"areaKey": "a:1", "nodeKey": k} for k in n],
+        surfaces=[surface("s:1", [[SQ]], {"z": 100.0})],
+        surface_nodes=members("s:1", n),
+    )
+    r, ends = MapIndex(p).route_points((10.0, 10.0, 100.0), "c", "shortest")
+    assert r["edgeKeys"] == ["x:a:1:q:from:c"] and ends[0]["areas"] == ["a:1", "s:1"]
+    assert r["steps"][0]["instruction"].startswith("광장을 가로질러")
+
+
+def test_point_routes_do_not_change_the_shared_index():
+    n, e = sloped_square()
+    idx = MapIndex(pkg(n, e, surfaces=[surface("s:1", [[SQ]], SLOPE_X)], surface_nodes=members("s:1", n)))
+    before = (len(idx.nodes), len(idx.edges), sum(len(v) for v in idx.out.values()))
+    idx.route_points((10.0, 5.0, 101.0), (5.0, 15.0, 100.5), "fastest")
+    assert (len(idx.nodes), len(idx.edges), sum(len(v) for v in idx.out.values())) == before
+    assert "q:from" not in idx.nodes

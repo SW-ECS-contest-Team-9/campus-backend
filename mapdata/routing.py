@@ -1,5 +1,6 @@
 """공개된 꾸러미 하나로 하는 검색·경로 계산 (메모리 안)."""
 
+import copy
 import heapq
 import math
 import re
@@ -212,19 +213,21 @@ class MapIndex:
             self.out[e["from"]].append((e, e["to"]))
             self.out[e["to"]].append((e, e["from"]))
         # 지표: 꾸러미에 있으면 그대로, 없으면(옛 꾸러미·열린 면 가상 간선) 길 선으로 계산
-        self.ind = {}
-        for k, e in self.edges.items():
-            i = e.get("indicators")
-            if i is None:
-                indoor = all(self.nodes[x]["location"] == "indoor" for x in (e["from"], e["to"]) if x in self.nodes)
-                i = basic_indicators(e, indoor)
-                if e["kind"] == "open_area":
-                    i["vehicle"] = "shared" if e.get("areaKind") == "parking_aisle" else "none"
-                    if e.get("surfaceKey"):  # 기단 면: 아스팔트이거나 빗금 차도·주차면이면 차와 같이 쓰는 곳
-                        sf = self.walk_surfaces[e["surfaceKey"]]
-                        if sf.get("material") == "asphalt" or any(w in (sf["name"] or "") for w in ("차도", "주차")):
-                            i["vehicle"] = "shared"
-            self.ind[k] = i
+        self.ind = {k: self._indicators(e, self.nodes) for k, e in self.edges.items()}
+
+    def _indicators(self, e: dict, nodes: dict) -> dict:
+        i = e.get("indicators")
+        if i is not None:
+            return i
+        indoor = all(nodes[x]["location"] == "indoor" for x in (e["from"], e["to"]) if x in nodes)
+        i = basic_indicators(e, indoor)
+        if e["kind"] == "open_area":
+            i["vehicle"] = "shared" if e.get("areaKind") == "parking_aisle" else "none"
+            if e.get("surfaceKey"):  # 기단 면: 아스팔트이거나 빗금 차도·주차면이면 차와 같이 쓰는 곳
+                sf = self.walk_surfaces[e["surfaceKey"]]
+                if sf.get("material") == "asphalt" or any(w in (sf["name"] or "") for w in ("차도", "주차")):
+                    i["vehicle"] = "shared"
+        return i
 
     def _area_edges(self, area_nodes: list[dict]) -> list[dict]:
         """면마다 같은 높이 노드끼리, 면 안에 머무는 직선이면 가상 간선(kind open_area)."""
@@ -233,42 +236,32 @@ class MapIndex:
             a, n = self.walk_areas.get(w["areaKey"]), self.nodes.get(w["nodeKey"])
             if a and n and a["z"] is not None and abs(n["z"] - a["z"]) <= AREA_DZ_M:
                 members[a["key"]].append(n)
+        self.area_members = {ak: sorted(ns, key=lambda n: n["key"]) for ak, ns in members.items()}
+        self.area_rings = {ak: _Ring(a["polygon"]) for ak, a in self.walk_areas.items()}
         out = []
-        for ak, ns in sorted(members.items()):
-            a, ring = self.walk_areas[ak], _Ring(self.walk_areas[ak]["polygon"])
-            ns = sorted(ns, key=lambda n: n["key"])
-            keep = set()
-            for i, n in enumerate(ns):
-                near = sorted((math.hypot(m["x"] - n["x"], m["y"] - n["y"]), j) for j, m in enumerate(ns) if j != i)
-                picked = 0
-                for _, j in near:
-                    if picked >= AREA_MAX_NEIGHBORS:
-                        break
-                    pair = (min(i, j), max(i, j))
-                    if pair in keep or ring.sees((n["x"], n["y"]), (ns[j]["x"], ns[j]["y"])):
-                        keep.add(pair)
-                        picked += 1
-            for i, j in sorted(keep):
-                p, q = ns[i], ns[j]
-                out.append(
-                    {
-                        "key": f"x:{ak}:{p['key']}:{q['key']}",
-                        "from": p["key"],
-                        "to": q["key"],
-                        "name": a["name"] or None,
-                        "kind": "open_area",
-                        "areaKind": a["kind"],
-                        "direction": "both",
-                        "pedestrianAccess": "allowed",
-                        "wheelchairAccess": "unknown",
-                        "lengthM": round(math.dist((p["x"], p["y"], p["z"]), (q["x"], q["y"], q["z"])), 2),
-                        "stepCount": None,
-                        "widthM": None,
-                        "geometry": [[p["x"], p["y"], p["z"]], [q["x"], q["y"], q["z"]]],
-                        "estimated": True,
-                    }
-                )
+        for ak, ns in sorted(self.area_members.items()):
+            for i, j in _visible_pairs(ns, self.area_rings[ak]):
+                out.append(self._area_edge(ak, ns[i], ns[j]))
         return out
+
+    def _area_edge(self, ak: str, p: dict, q: dict) -> dict:
+        a = self.walk_areas[ak]
+        return {
+            "key": f"x:{ak}:{p['key']}:{q['key']}",
+            "from": p["key"],
+            "to": q["key"],
+            "name": a["name"] or None,
+            "kind": "open_area",
+            "areaKind": a["kind"],
+            "direction": "both",
+            "pedestrianAccess": "allowed",
+            "wheelchairAccess": "unknown",
+            "lengthM": round(math.dist((p["x"], p["y"], p["z"]), (q["x"], q["y"], q["z"])), 2),
+            "stepCount": None,
+            "widthM": None,
+            "geometry": [[p["x"], p["y"], p["z"]], [q["x"], q["y"], q["z"]]],
+            "estimated": True,
+        }
 
     def _surface_edges(self, surface_nodes: list[dict], joined: set) -> list[dict]:
         """기단 면마다 면 높이(±AREA_DZ_M) 노드끼리, 면(구멍 포함) 안에 머무는 직선이면 가상 간선(kind open_area).
@@ -283,46 +276,117 @@ class MapIndex:
                 and abs(n["z"] - surface_z(s["top"], n["x"], n["y"])) <= AREA_DZ_M
             ):
                 members[s["key"]].append(n)
+        self.surface_members = {sk: sorted(ns, key=lambda n: n["key"]) for sk, ns in members.items()}
+        self.surface_regions = {sk: _Region(s["polygons"]) for sk, s in self.walk_surfaces.items()}
         out = []
-        for sk, ns in sorted(members.items()):
-            s, region = self.walk_surfaces[sk], _Region(self.walk_surfaces[sk]["polygons"])
-            ns = sorted(ns, key=lambda n: n["key"])
-            keep = set()
-            for i, n in enumerate(ns):
-                near = sorted((math.hypot(m["x"] - n["x"], m["y"] - n["y"]), j) for j, m in enumerate(ns) if j != i)
-                picked = 0
-                for _, j in near:
-                    if picked >= AREA_MAX_NEIGHBORS:
-                        break
-                    pair = (min(i, j), max(i, j))
-                    if pair in keep or region.sees((n["x"], n["y"]), (ns[j]["x"], ns[j]["y"])):
-                        keep.add(pair)
-                        picked += 1
-            for i, j in sorted(keep):
+        for sk, ns in sorted(self.surface_members.items()):
+            for i, j in _visible_pairs(ns, self.surface_regions[sk]):
                 p, q = ns[i], ns[j]
-                if frozenset((p["key"], q["key"])) in joined:
-                    continue
-                g = _surface_line(s["top"], p, q)
-                out.append(
-                    {
-                        "key": f"y:{sk}:{p['key']}:{q['key']}",
-                        "from": p["key"],
-                        "to": q["key"],
-                        "name": s["name"] or None,
-                        "kind": "open_area",
-                        "areaKind": "surface",
-                        "surfaceKey": sk,
-                        "direction": "both",
-                        "pedestrianAccess": "allowed",
-                        "wheelchairAccess": "unknown",
-                        "lengthM": round(sum(math.dist(a, b) for a, b in zip(g, g[1:])), 2),
-                        "stepCount": None,
-                        "widthM": None,
-                        "geometry": g,
-                        "estimated": True,
-                    }
-                )
+                if frozenset((p["key"], q["key"])) not in joined:
+                    out.append(self._surface_edge(sk, p, q))
         return out
+
+    def _surface_edge(self, sk: str, p: dict, q: dict) -> dict:
+        s = self.walk_surfaces[sk]
+        g = _surface_line(s["top"], p, q)
+        return {
+            "key": f"y:{sk}:{p['key']}:{q['key']}",
+            "from": p["key"],
+            "to": q["key"],
+            "name": s["name"] or None,
+            "kind": "open_area",
+            "areaKind": "surface",
+            "surfaceKey": sk,
+            "direction": "both",
+            "pedestrianAccess": "allowed",
+            "wheelchairAccess": "unknown",
+            "lengthM": round(sum(math.dist(a, b) for a, b in zip(g, g[1:])), 2),
+            "stepCount": None,
+            "widthM": None,
+            "geometry": g,
+            "estimated": True,
+        }
+
+    # ---------- 면 위 아무 점 ----------
+    def _point_on(self, x: float, y: float, z: float) -> list[tuple]:
+        """점 (x, y, z) 를 덮고 높이(±AREA_DZ_M)가 맞는 열린 면·기단 면: [(높이 차, 면 높이, "area"|"surface", key)].
+        열린 면 먼저(key 순), 그다음 기단 면(key 순)."""
+        hits = []
+        for ak in sorted(self.walk_areas):
+            a = self.walk_areas[ak]
+            if a["z"] is not None and abs(z - a["z"]) <= AREA_DZ_M and self.area_rings[ak].covers((x, y)):
+                hits.append((abs(z - a["z"]), float(a["z"]), "area", ak))
+        for sk in sorted(self.walk_surfaces):
+            zs = surface_z(self.walk_surfaces[sk]["top"], x, y)
+            if abs(z - zs) <= AREA_DZ_M and self.surface_regions[sk].covers((x, y)):
+                hits.append((abs(z - zs), zs, "surface", sk))
+        return hits
+
+    def _point_edges(self, pt: dict, hits: list[tuple], others: list[dict]) -> list[dict]:
+        """면 위 임시 노드 pt 를 그 면의 노드(와 같은 면 위 앞서 만든 임시 노드 others)에 잇는 가상 간선.
+        같은 면 규칙: 면(구멍 포함) 안에 머무는 직선, 기단 면 선은 면 높이를 따라감. 열린 면이 이은 노드는
+        기단 면이 다시 잇지 않는다. 이웃 수 제한은 없다(점 하나라 간선 수가 면 노드 수만큼)."""
+        out, joined = [], set()
+        for _, _, kind, k in hits:
+            shape = self.area_rings[k] if kind == "area" else self.surface_regions[k]
+            mem = self.area_members.get(k, []) if kind == "area" else self.surface_members.get(k, [])
+            for n in [*mem, *[o for o in others if k in o["_on"]]]:
+                if n["key"] in joined or not shape.sees((pt["x"], pt["y"]), (n["x"], n["y"])):
+                    continue
+                joined.add(n["key"])
+                out.append(self._area_edge(k, pt, n) if kind == "area" else self._surface_edge(k, pt, n))
+        return out
+
+    def route_points(self, start, goal, mode: str) -> tuple[dict | None, list[dict | None]]:
+        """출발·도착이 노드 key 또는 점 (x, y, z). 열린 면·기단 면 위 점은 임시 노드(q:from, q:to)로 넣어
+        그 면의 노드와 같은 면 규칙으로 잇는다(면 안에 노드가 없는 넓은 면도 쓸 수 있게). 면 위가 아니거나
+        이을 노드가 없으면 25 m·높이 차 2 m 안 가장 가까운 노드. 공유하는 색인은 바꾸지 않는다.
+        반환: (경로 또는 None, [출발, 도착] 붙인 결과 {nodeKey, attached: node|surface|nearest_node, areas} 또는 None)."""
+        tmp_nodes, tmp_edges, ends = {}, [], []
+        for key, spec in (("q:from", start), ("q:to", goal)):
+            if isinstance(spec, str):
+                ends.append({"nodeKey": spec, "attached": "node"} if spec in self.nodes else None)
+                continue
+            x, y, z = (float(v) for v in spec)
+            hits = self._point_on(x, y, z)
+            if hits:
+                zs = min(hits, key=lambda h: h[0])[1]
+                pt = {
+                    "key": key,
+                    "location": "outdoor",
+                    "buildingKey": None,
+                    "floorKey": None,
+                    "kind": "point",
+                    "x": round(x, 2),
+                    "y": round(y, 2),
+                    "z": round(zs, 2),
+                    "estimated": True,
+                    "_on": {h[3] for h in hits},
+                }
+                es = self._point_edges(pt, hits, list(tmp_nodes.values()))
+                if es:
+                    tmp_nodes[key] = pt
+                    tmp_edges += es
+                    ends.append({"nodeKey": key, "attached": "surface", "areas": [h[3] for h in hits]})
+                    continue
+            n = self.nearest_node(x, y, z)
+            ends.append({"nodeKey": n["key"], "attached": "nearest_node"} if n else None)
+        if None in ends:
+            return None, ends
+        view = self._with(tmp_nodes, tmp_edges) if tmp_edges else self
+        return view.route(ends[0]["nodeKey"], ends[1]["nodeKey"], mode), ends
+
+    def _with(self, tmp_nodes: dict, tmp_edges: list[dict]) -> "MapIndex":
+        """임시 노드·간선을 더한 얕은 복사본(원래 색인의 dict·목록은 바꾸지 않음)."""
+        view = copy.copy(self)
+        view.nodes = {**self.nodes, **{k: {f: v for f, v in n.items() if f != "_on"} for k, n in tmp_nodes.items()}}
+        view.edges = {**self.edges, **{e["key"]: e for e in tmp_edges}}
+        view.out = defaultdict(list, self.out)
+        for e in tmp_edges:
+            view.out[e["from"]] = [*view.out[e["from"]], (e, e["to"])]
+            view.out[e["to"]] = [*view.out[e["to"]], (e, e["from"])]
+        view.ind = {**self.ind, **{e["key"]: self._indicators(e, view.nodes) for e in tmp_edges}}
+        return view
 
     # ---------- 검색 ----------
     def _building_filter(self, q: str | None):
@@ -591,6 +655,22 @@ class MapIndex:
             _durationS=t["_durationS"],
         )
         return out
+
+
+def _visible_pairs(ns: list[dict], shape) -> list[tuple[int, int]]:
+    """노드마다 가까운 이웃부터 AREA_MAX_NEIGHBORS 개까지, 면 안에 머무는 직선으로 보이는 쌍(i < j)."""
+    keep = set()
+    for i, n in enumerate(ns):
+        near = sorted((math.hypot(m["x"] - n["x"], m["y"] - n["y"]), j) for j, m in enumerate(ns) if j != i)
+        picked = 0
+        for _, j in near:
+            if picked >= AREA_MAX_NEIGHBORS:
+                break
+            pair = (min(i, j), max(i, j))
+            if pair in keep or shape.sees((n["x"], n["y"]), (ns[j]["x"], ns[j]["y"])):
+                keep.add(pair)
+                picked += 1
+    return sorted(keep)
 
 
 def _surface_line(top: dict, p: dict, q: dict) -> list:
