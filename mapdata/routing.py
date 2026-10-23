@@ -482,38 +482,7 @@ class MapIndex:
         return None
 
     def _cost(self, e: dict, mode: str, reverse: bool, boarding: bool) -> float | None:
-        spec, i = MODE_SPEC[mode], self.ind[e["key"]]
-        if "stairs" in spec["exclude"] and e["kind"] == "stairs":
-            return None
-        if "wheelchairNo" in spec["exclude"] and i.get("wheelchair") == "no":
-            return None
-        m = spec["mult"]
-        if spec["base"] == "walkS":
-            c = i["walkSBack"] if reverse else i["walkS"]
-            if boarding and e["kind"] == "elevator":
-                c += spec.get("elevatorWaitS", 0.0)
-        else:
-            c = e["lengthM"]
-        if e["kind"] in ("stairs", "elevator"):
-            c *= m.get(e["kind"], 1.0)
-        if e["pedestrianAccess"] == "unknown":
-            c *= m["pedestrianUnknown"]
-        if e["kind"] == "vehicle_road":
-            c *= m["vehicleRoadWalk"] if e["pedestrianAccess"] == "allowed" else m["vehicleRoad"]
-        if e["kind"] == "open_area":
-            c *= m["openArea"]
-        if i.get("wheelchair") == "steep":
-            c *= m.get("wheelchairSteep", 1.0)
-        if i.get("wheelchair") == "unknown":
-            c *= m.get("wheelchairUnknown", 1.0)
-        x = spec.get("exposure", {})
-        if "rain" in x:
-            c *= 1 + x["rain"] * (1 - (i.get("coveredRatio") or 0.0))
-        if "dark" in x and not i.get("indoor"):
-            c *= 1 + x["dark"] * (1 - (i.get("litRatio") or 0.0))
-        if "vehicle" in x and i.get("vehicle") in ("shared", "crossing"):
-            c *= 1 + x["vehicle"]
-        return c
+        return edge_cost(e, self.ind[e["key"]], mode, reverse, boarding)
 
     def route(self, start: str, goal: str, mode: str) -> dict | None:
         """다익스트라. 상태 = (노드, 승강기 안인지): 승강기 기다림을 탈 때 한 번만 센다."""
@@ -667,6 +636,42 @@ class MapIndex:
             _durationS=t["_durationS"],
         )
         return out
+
+
+def edge_cost(e: dict, i: dict, mode: str, reverse: bool, boarding: bool) -> float | None:
+    """길 하나의 방식별 비용(i = 길 지표). None = 이 방식에서 못 지나감."""
+    spec = MODE_SPEC[mode]
+    if "stairs" in spec["exclude"] and e["kind"] == "stairs":
+        return None
+    if "wheelchairNo" in spec["exclude"] and i.get("wheelchair") == "no":
+        return None
+    m = spec["mult"]
+    if spec["base"] == "walkS":
+        c = i["walkSBack"] if reverse else i["walkS"]
+        if boarding and e["kind"] == "elevator":
+            c += spec.get("elevatorWaitS", 0.0)
+    else:
+        c = e["lengthM"]
+    if e["kind"] in ("stairs", "elevator"):
+        c *= m.get(e["kind"], 1.0)
+    if e["pedestrianAccess"] == "unknown":
+        c *= m["pedestrianUnknown"]
+    if e["kind"] == "vehicle_road":
+        c *= m["vehicleRoadWalk"] if e["pedestrianAccess"] == "allowed" else m["vehicleRoad"]
+    if e["kind"] == "open_area":
+        c *= m["openArea"]
+    if i.get("wheelchair") == "steep":
+        c *= m.get("wheelchairSteep", 1.0)
+    if i.get("wheelchair") == "unknown":
+        c *= m.get("wheelchairUnknown", 1.0)
+    x = spec.get("exposure", {})
+    if "rain" in x:
+        c *= 1 + x["rain"] * (1 - (i.get("coveredRatio") or 0.0))
+    if "dark" in x and not i.get("indoor"):
+        c *= 1 + x["dark"] * (1 - (i.get("litRatio") or 0.0))
+    if "vehicle" in x and i.get("vehicle") in ("shared", "crossing"):
+        c *= 1 + x["vehicle"]
+    return c
 
 
 def _visible_pairs(ns: list[dict], shape) -> list[tuple[int, int]]:
