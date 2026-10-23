@@ -160,11 +160,13 @@ def _frame(geom, top: dict | None) -> tuple[list[float], list[float]]:
     if ux < 0 or (ux == 0 and uy < 0):  # 같은 축은 같은 방향으로(결정적)
         ux, uy = -ux, -uy
     ux, uy = round(ux, 6), round(uy, 6)
-    xy = shapely.get_coordinates(geom.boundary)
+    # 면 가까운 기준점에서 잰다: 반올림한 축은 길이가 1 에서 1e-6 쯤 벗어나 5186 큰 좌표에 곱하면 원점이 0.5 m 어긋난다
+    rx, ry = math.floor(geom.bounds[0]), math.floor(geom.bounds[1])
+    xy = shapely.get_coordinates(geom.boundary) - np.array([rx, ry])
     a = xy[:, 0] * ux + xy[:, 1] * uy
     b = -xy[:, 0] * uy + xy[:, 1] * ux
     a0, b0 = math.floor(a.min() * 100) / 100, math.floor(b.min() * 100) / 100
-    origin = [round(a0 * ux - b0 * uy, 2), round(a0 * uy + b0 * ux, 2)]
+    origin = [round(rx + a0 * ux - b0 * uy, 2), round(ry + a0 * uy + b0 * ux, 2)]
     return origin, [ux, uy]
 
 

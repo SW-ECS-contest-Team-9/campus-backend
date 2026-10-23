@@ -503,3 +503,27 @@ def test_indoor_and_outdoor_meshes_join_only_through_door_edge():
     for i, hits in r.node_att.items():
         loc = r.idx.pkg["nodes"][i]["location"]
         assert all((r.meshes[mi].kind == "floor") == (loc == "indoor") for mi, _ in hits)
+
+
+# ---------- 덧붙임 3: 큰 좌표 격자 원점, 좁은 실내 띠, 빈 곳 밑 경사로 ----------
+
+
+def tilted_strip(x0, y0, length, width, d=(0.908682, -0.41749)):
+    n = math.hypot(*d)
+    ux, uy = d[0] / n, d[1] / n
+    return [
+        [x0, y0],
+        [x0 + length * ux, y0 + length * uy],
+        [x0 + length * ux - width * uy, y0 + length * uy + width * ux],
+        [x0 - width * uy, y0 + width * ux],
+    ]
+
+
+def test_grid_origin_sits_on_face_corner_at_large_coordinates():
+    """5186 큰 좌표에서도 원점이 면의 축 좌표 최소 모서리에 놓인다(축 반올림으로 0.5 m 어긋나 반만 덮이던 것)."""
+    ring = tilted_strip(201089.0, 557356.0, 30.0, 2.4)
+    e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[ring]], {"z": 100.0})]))[0][0]
+    m = walkmesh.Mesh(e, {}, [])
+    ab = [m.local(x, y) for x, y in ring]
+    assert min(a for a, _ in ab) > -0.02 and min(b for _, b in ab) > -0.02
+    assert e["cover"] > 0.8
