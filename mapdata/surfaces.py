@@ -13,6 +13,7 @@
 """
 
 import json
+import math
 from pathlib import Path
 
 from shapely import STRtree, get_coordinates
@@ -184,3 +185,150 @@ def build(platforms, solids, outline, building_rings, zones, nodes) -> tuple[lis
     rep["surfaceNodes"] = len(links)
     rep["sloped"] = sum("profile" in s["top"] for s in surfaces)
     return surfaces, links, rep
+
+
+SPLIT_SKIP_KINDS = {"stairs", "elevator"}
+
+
+def _seg_cross(p, q, a, b):
+    """선분 pq 와 ab 가 한 점에서 만나면 (pq 위 비율 t, ab 위 비율 u). 나란하면 None."""
+    rx, ry, sx, sy = q[0] - p[0], q[1] - p[1], b[0] - a[0], b[1] - a[1]
+    den = rx * sy - ry * sx
+    if abs(den) < 1e-12:
+        return None
+    t = ((a[0] - p[0]) * sy - (a[1] - p[1]) * sx) / den
+    u = ((a[0] - p[0]) * ry - (a[1] - p[1]) * rx) / den
+    if -1e-9 <= t <= 1 + 1e-9 and -1e-9 <= u <= 1 + 1e-9:
+        return min(1.0, max(0.0, t)), min(1.0, max(0.0, u))
+    return None
+
+
+def _insert_vertex(ring: list, pt) -> None:
+    """점을 가장 가까운 변에 꼭짓점으로 넣는다(이미 꼭짓점이면 그대로)."""
+    p = [pt[0], pt[1]]
+    if p in ring:
+        return
+    best, bd = 0, math.inf
+    for k in range(len(ring)):
+        a, b = ring[k], ring[(k + 1) % len(ring)]
+        dx, dy = b[0] - a[0], b[1] - a[1]
+        t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy or 1.0)))
+        d = math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy)
+        if d < bd:
+            best, bd = k, d
+    ring.insert(best + 1, p)
+
+
+def split_edges(surfaces: list, links: list, nodes: list, edges: list) -> tuple[list, list, list, dict]:
+    """바깥 길이 면 바깥 경계를 지나는 곳에 노드를 넣고 길을 나눈다(면 안에 노드가 없어도 면이 길과 이어지게).
+
+    · 대상: 바깥 길(건물 밖), 계단·승강기 아님, 보행 금지 아님.
+    · 지나는 곳의 길 높이가 그 곳 면 높이와 AREA_DZ_M 안일 때만(다리·지하 길은 아님).
+    · 길 끝 노드에서 SNAP_M 안이면 넣지 않는다(끝 노드가 이미 면 위 노드). 한 길의 가까운 두 곳도 하나로.
+    · 새 노드 key = 길 id + "~순번"(n:<id>~1), 나눈 길 key = 길 key + "~순번"(e:<id>~1, ~2 ...).
+    · 새 노드 자리(소수 둘째 자리)를 면 경계에 꼭짓점으로 넣어 면 위(경계)에 정확히 놓이게 한다.
+    surfaces 의 polygons 는 고친다(꼭짓점 추가). 반환: (nodes, edges, links, 보고)."""
+    by_key = {n["key"]: n for n in nodes}
+    rep = {"splitEdges": 0, "boundaryNodes": 0}
+    new_nodes, new_edges, new_links = list(nodes), [], list(links)
+    shapes = [(s, MultiPolygon([Polygon(p[0], p[1:]) for p in s["polygons"]])) for s in surfaces]
+    for e in edges:
+        a, b = by_key.get(e["from"]), by_key.get(e["to"])
+        if (
+            e.get("_building")
+            or e["kind"] in SPLIT_SKIP_KINDS
+            or e["pedestrianAccess"] == "prohibited"
+            or not a
+            or not b
+            or a["location"] != "outdoor"
+            or b["location"] != "outdoor"
+        ):
+            new_edges.append(e)
+            continue
+        g = e["geometry"]
+        seg_start = [0.0]
+        for p, q in zip(g, g[1:]):
+            seg_start.append(seg_start[-1] + math.hypot(q[0] - p[0], q[1] - p[1]))
+        total = seg_start[-1]
+        cuts = []  # (길 따라 거리, 선분 번호, [x, y, z], 면, 고리, 변 번호)
+        for s, _ in shapes:
+            for pi, part in enumerate(s["polygons"]):
+                ring = part[0]
+                for k in range(len(ring)):
+                    ra, rb = ring[k], ring[(k + 1) % len(ring)]
+                    for i, (p, q) in enumerate(zip(g, g[1:])):
+                        hit = _seg_cross(p, q, ra, rb)
+                        if hit is None:
+                            continue
+                        t, _u = hit
+                        along = seg_start[i] + t * (seg_start[i + 1] - seg_start[i])
+                        if along <= SNAP_M or total - along <= SNAP_M:
+                            continue
+                        x, y = round(p[0] + t * (q[0] - p[0]), 2), round(p[1] + t * (q[1] - p[1]), 2)
+                        z = round(p[2] + t * (q[2] - p[2]), 2)
+                        if abs(z - surface_z(s["top"], x, y)) > AREA_DZ_M:
+                            continue
+                        cuts.append((along, i, [x, y, z], s, pi, k))
+        cuts.sort(key=lambda c: c[0])
+        kept = []
+        for c in cuts:
+            if not kept or c[0] - kept[-1][0] > SNAP_M:
+                kept.append(c)
+        if not kept:
+            new_edges.append(e)
+            continue
+        rep["splitEdges"] += 1
+        raw = e["key"][2:]
+        cut_keys = []
+        for j, (_along, _i, pt, s, pi, _k) in enumerate(kept, 1):
+            nk = f"n:{raw}~{j}"
+            cut_keys.append(nk)
+            n = {
+                "key": nk,
+                "location": "outdoor",
+                "buildingKey": None,
+                "floorKey": None,
+                "kind": "junction",
+                "x": pt[0],
+                "y": pt[1],
+                "z": pt[2],
+                "estimated": e["estimated"],
+            }
+            new_nodes.append(n)
+            _insert_vertex(s["polygons"][pi][0], pt)
+            rep["boundaryNodes"] += 1
+            # 이 노드를 덮는(경계 포함) 같은 높이 면 모두의 면 위 노드로
+            for s2, shp in shapes:
+                if s2 is s or (
+                    shp.buffer(1e-6).covers(Point(pt[0], pt[1]))
+                    and abs(pt[2] - surface_z(s2["top"], pt[0], pt[1])) <= AREA_DZ_M
+                ):
+                    new_links.append({"surfaceKey": s2["key"], "nodeKey": nk})
+        # 길 나누기
+        ends = [e["from"], *cut_keys, e["to"]]
+        pieces, cur = [], [g[0]]
+        ci = 0
+        for i, (p, q) in enumerate(zip(g, g[1:])):
+            while ci < len(kept) and kept[ci][1] == i:
+                pt = kept[ci][2]
+                if cur[-1][:2] != pt[:2]:
+                    cur.append(pt)
+                pieces.append(cur)
+                cur = [pt]
+                ci += 1
+            if cur[-1][:2] != q[:2]:
+                cur.append(q)
+        pieces.append(cur)
+        for j, coords in enumerate(pieces, 1):
+            new_edges.append(
+                {
+                    **e,
+                    "key": f"{e['key']}~{j}",
+                    "from": ends[j - 1],
+                    "to": ends[j],
+                    "geometry": coords,
+                    "lengthM": round(sum(math.dist(u, v) for u, v in zip(coords, coords[1:])), 2),
+                }
+            )
+    new_links.sort(key=lambda w: (w["surfaceKey"], w["nodeKey"]))
+    return new_nodes, new_edges, new_links, rep

@@ -256,3 +256,96 @@ def test_transform_without_walkable_has_no_surfaces():
     del s["walkable"]
     c, rep = transform.build(s)
     assert c["walkSurfaces"] == [] and rep["surfaces"] is None
+
+
+# ---------- 길이 면 경계를 지나는 곳에 노드 (가져올 때) ----------
+
+
+def _content_edge(key, a, b, coords, kind="walkway", access="allowed"):
+    return {
+        "key": key,
+        "from": a,
+        "to": b,
+        "name": "앞길",
+        "kind": kind,
+        "direction": "both",
+        "pedestrianAccess": access,
+        "wheelchairAccess": "unknown",
+        "lengthM": round(transform.poly_len(coords), 2),
+        "stepCount": None,
+        "widthM": None,
+        "geometry": coords,
+        "estimated": False,
+        "_building": None,
+        "_level": None,
+    }
+
+
+def _flat_surface():
+    out, links, _ = surfaces.build(
+        [platform("P", SQ, top_m=100.0)], [], [[[-30, -30], [50, -30], [50, 50], [-30, 50]]], [], [], []
+    )
+    return out, links
+
+
+def test_split_adds_boundary_nodes_where_road_crosses_surface_edge():
+    out, links = _flat_surface()
+    nodes = [node("n:w", -10, 10, 100.0), node("n:e", 30, 10, 100.0)]
+    edges = [_content_edge("e:r", "n:w", "n:e", [[-10, 10, 100.0], [30, 10, 100.0]])]
+    nodes2, edges2, links2, rep = surfaces.split_edges(out, links, nodes, edges)
+    assert [e["key"] for e in edges2] == ["e:r~1", "e:r~2", "e:r~3"]
+    assert [(e["from"], e["to"]) for e in edges2] == [("n:w", "n:r~1"), ("n:r~1", "n:r~2"), ("n:r~2", "n:e")]
+    new = {n["key"]: n for n in nodes2 if n["key"].startswith("n:r~")}
+    assert (new["n:r~1"]["x"], new["n:r~1"]["y"], new["n:r~1"]["z"]) == (0.0, 10.0, 100.0)
+    assert (new["n:r~2"]["x"], new["n:r~2"]["y"]) == (20.0, 10.0)
+    assert new["n:r~1"]["location"] == "outdoor" and new["n:r~1"]["kind"] == "junction"
+    assert sum(e["lengthM"] for e in edges2) == 40.0
+    assert {w["nodeKey"] for w in links2} == {"n:r~1", "n:r~2"}
+    assert [0.0, 10.0] in out[0]["polygons"][0][0]  # 노드가 면 경계 꼭짓점에 정확히 놓인다
+    assert rep["splitEdges"] == 1 and rep["boundaryNodes"] == 2
+    # 이제 면 노드가 있어 면을 가로지른다
+    idx = MapIndex(pkg({n["key"]: n for n in nodes2}, edges2, surfaces=out, surface_nodes=links2))
+    assert idx.route("n:r~1", "n:r~2", "shortest") is not None
+
+
+def test_split_skips_other_height_stairs_prohibited_and_near_end():
+    out, links = _flat_surface()
+    nodes = [
+        node("n:a", -10, 5, 103.0),
+        node("n:b", 30, 5, 103.0),  # 면보다 3 m 위(다리)
+        node("n:c", -10, 15, 100.0),
+        node("n:d", 30, 15, 100.0),
+        node("n:e", 0.3, 18, 100.0),  # 끝이 경계에서 0.3 m
+        node("n:f", -10, 18, 100.0),
+    ]
+    edges = [
+        _content_edge("e:hi", "n:a", "n:b", [[-10, 5, 103.0], [30, 5, 103.0]]),
+        _content_edge("e:st", "n:c", "n:d", [[-10, 15, 100.0], [30, 15, 100.0]], kind="stairs"),
+        _content_edge("e:no", "n:c", "n:d", [[-10, 15, 100.0], [30, 15, 100.0]], access="prohibited"),
+        _content_edge("e:near", "n:f", "n:e", [[-10, 18, 100.0], [0.3, 18, 100.0]]),
+    ]
+    nodes2, edges2, links2, rep = surfaces.split_edges(out, links, nodes, edges)
+    assert [e["key"] for e in edges2] == ["e:hi", "e:st", "e:no", "e:near"]
+    assert len(nodes2) == len(nodes) and links2 == links and rep["boundaryNodes"] == 0
+
+
+def test_split_on_sloped_surface_uses_surface_height_at_crossing():
+    out, links, _ = surfaces.build(
+        [platform("P", SQ, profile=SLOPE_X["profile"])], [], [[[-30, -30], [50, -30], [50, 50], [-30, 50]]], [], [], []
+    )
+    # 남북으로 지나는 길(x = 10, 면 높이 101): 아래(y=0)·위(y=20) 경계에서 노드
+    nodes = [node("n:s", 10, -10, 101.0), node("n:n", 10, 30, 101.0)]
+    edges = [_content_edge("e:ns", "n:s", "n:n", [[10, -10, 101.0], [10, 30, 101.0]])]
+    _, _, links2, _ = surfaces.split_edges(out, links, nodes, edges)
+    assert {w["nodeKey"] for w in links2} == {"n:ns~1", "n:ns~2"}
+
+
+def test_transform_splits_road_through_surface_without_nodes():
+    s = _src()
+    # 면(x 0~20, 높이 100~102)을 동서로 지나는 길: 면 안에 노드가 없다
+    s["roads"] = [road("rx", "w", "e", [[-10, 10, 100.0], [0, 10, 100.0], [20, 10, 102.0], [30, 10, 102.0]])]
+    c, rep = transform.build(s)
+    assert [e["key"] for e in c["edges"]] == ["e:rx~1", "e:rx~2", "e:rx~3"]
+    assert {w["nodeKey"] for w in c["walkSurfaceNodes"]} == {"n:rx~1", "n:rx~2"}
+    assert all(e.get("indicators") for e in c["edges"])  # 나눈 길도 지표가 있다
+    assert rep["surfaces"]["boundaryNodes"] == 2

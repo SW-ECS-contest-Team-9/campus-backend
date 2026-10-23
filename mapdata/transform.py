@@ -432,6 +432,23 @@ def build(src: dict) -> tuple[dict, dict]:
             nodes,
         )
         surf_rep["walkableFile"] = walk.get("file")
+        # 길이 면 경계를 지나는 곳에 노드(면 안에 노드가 없는 넓은 면도 길과 이어지게)
+        before = {n["key"] for n in nodes}
+        nodes, edges, surf_nodes, split_rep = surfaces.split_edges(surf, surf_nodes, nodes, edges)
+        surf_rep.update(split_rep)
+        for n in nodes:
+            if n["key"] in before:
+                continue
+            for a in areas:
+                if (
+                    a["z"] is not None
+                    and abs(n["z"] - a["z"]) <= AREA_DZ_M
+                    and (
+                        point_in_poly(n["x"], n["y"], a["polygon"])
+                        or dist_to_ring(n["x"], n["y"], a["polygon"]) <= AREA_EDGE_TOL_M
+                    )
+                ):
+                    area_nodes.append({"areaKey": a["key"], "nodeKey": n["key"]})
     elif walk:
         unf("walkable_without_structures", "걷는 곳 외곽은 있는데 구조물이 없어 기단 면을 못 만듦")
 
