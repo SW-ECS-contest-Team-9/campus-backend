@@ -9,6 +9,7 @@
 | 꾸러미 파일 | 볼륨 `campus-backend-releases` |
 | 설정 | `deploy/.env` (`.env.server.example` 복사본) |
 | 걷는 면 원천 | 구조물 `~/Desktop/CampusTracker-Server/frontend/public/structures`(`STRUCTURES_DIR`), 외곽 저장소 `mapdata/data/walkable-areas-5186.geojson`(`WALKABLE_GEOJSON`). api 에 읽기 전용으로 붙음 |
+| 실내 빈 곳 | `~/Desktop/CampusTracker-Server/frontend/public/interiors.geojson`(`INTERIORS_GEOJSON`). api 에 읽기 전용으로 붙음. 없으면 비움 |
 
 이 문서와 compose 파일은 저장소에 있다. 비밀값(DB 비밀번호)은 서버의 `deploy/.env` 에만 둔다(커밋 안 됨).
 명령은 모두 저장소 루트(`~/Desktop/campus-backend`)에서 돌린다. 아래 `DC` 는 `docker compose -f deploy/compose.server.yml` 의 줄임이다.
@@ -37,7 +38,8 @@ deploy/import-release.sh /tmp/mobility.sql
 
 - 원천: 트래커 읽기 API(`TRACKER_API`, 기본 `http://100.93.21.92:3000`) + 위 SQL(보행 통행·방향·휠체어, 노드 층, 열린 면). 트래커 DB 는 읽기만 한다.
 - 걷는 면(walkSurfaces): 스크립트가 `--structures /srv/structures --walkable /srv/walkable-areas-5186.geojson` 을 넘긴다. compose 가 `STRUCTURES_DIR`(기본 `../../CampusTracker-Server/frontend/public/structures` = 서버의 트래커 체크아웃)와 `WALKABLE_GEOJSON`(기본 저장소의 `mapdata/data/walkable-areas-5186.geojson`)을 읽기 전용으로 붙인다. 경로가 없으면 `up` 이 멈추고(Linux 도커), 폴더가 비었으면 스크립트가 공개 없이 종료 코드 1. 트래커를 `git pull` 한 뒤 다시 가져오면 새 구조물이 쓰인다(이미지 다시 만들 필요 없음).
-- 외곽을 고치면 저장소의 `mapdata/data/walkable-areas-5186.geojson` 을 고쳐 커밋한다. 이 PC 시험은 `deploy/.env` 에 `STRUCTURES_DIR=C:/campus-tracker-testdb/frontend/public/structures` 처럼 적는다.
+- 실내 층 그물(복도·로비 바닥): compose 가 `INTERIORS_GEOJSON`(기본 `.env.server.example` 값 `../../CampusTracker-Server/frontend/public/interiors.geojson`)을 `/srv/interiors.geojson` 에 읽기 전용으로 붙이고 스크립트가 `--interiors` 로 넘긴다. 트래커 체크아웃에 아직 이 파일이 없으면 `deploy/.env` 에서 `INTERIORS_GEOJSON=` 로 비운다(그러면 compose 가 `/dev/null` 을 붙인다). 그때 가져오기는 그대로 되고 `실내 구조 없이 그물은 복도 띠로만` 을 찍는다. 경로를 적었는데 파일이 없으면 `up` 이 멈춘다(Linux 도커). 파일이 생기면 `INTERIORS_GEOJSON` 을 채우고 `up -d` 뒤 다시 가져온다.
+- 외곽을 고치면 저장소의 `mapdata/data/walkable-areas-5186.geojson` 을 고쳐 커밋한다. 이 PC 시험은 `deploy/.env` 에 `STRUCTURES_DIR=C:/campus-tracker-testdb/frontend/public/structures`, `INTERIORS_GEOJSON=C:/campus-tracker-testdb/frontend/public/interiors.geojson` 처럼 적는다.
 - pg_dump 의 `circular foreign-key constraints` 경고는 무시해도 된다.
 - 검증 오류가 없으면 새 버전으로 공개하고 보고서(JSON)와 지금 최신을 찍는다. 오류가 있으면 공개하지 않고 종료 코드 1.
 - 트래커는 Tailscale IP(100.93.21.92:3000)에만 열려 있어 `host.docker.internal:3000` 으로는 컨테이너에서 닿지 않는다(2026-10-15 서버에서 확인). 이 PC 등 로컬 시험은 `deploy/.env` 에 `TRACKER_API=http://host.docker.internal:3210` 처럼 적는다.

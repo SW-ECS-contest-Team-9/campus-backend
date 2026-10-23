@@ -57,6 +57,14 @@ services:
         read_only: true
         bind:
           create_host_path: false
+      # 실내 빈 곳(복도·로비, 실내 층 그물 바닥). 읽기 전용. deploy/.env 에 INTERIORS_GEOJSON 이 없거나 비면 /dev/null 을
+      # 붙여 실내 구조 없이 가져온다(그물은 복도 띠로만). 있는 경로를 적었는데 파일이 없으면 위처럼 up 이 멈춘다.
+      - type: bind
+        source: ${INTERIORS_GEOJSON:-/dev/null}
+        target: /srv/interiors.geojson
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
 volumes:
