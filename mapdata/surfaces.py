@@ -332,3 +332,68 @@ def split_edges(surfaces: list, links: list, nodes: list, edges: list) -> tuple[
             )
     new_links.sort(key=lambda w: (w["surfaceKey"], w["nodeKey"]))
     return new_nodes, new_edges, new_links, rep
+
+
+SEAM_SPACING_M = 10.0  # 맞닿은 경계에 이음 노드를 두는 간격
+SEAM_MIN_M = 1.0  # 이보다 짧게 맞닿은 곳은 잇지 않는다
+SEAM_TOL_M = 0.05  # 두 면 경계가 이만큼 안이면 맞닿은 것
+
+
+def seam_nodes(surfaces: list, links: list, nodes: list) -> tuple[list, list, dict]:
+    """두 걷는 면이 같은 높이(차 STEP_OK_M 안)로 맞닿은 경계에 이음 노드를 두어 두 면을 잇는다.
+
+    기단이 여러 조각(윗면이 다름)으로 나뉘어도 맞닿은 곳 높이가 같으면 한 바닥이다(턱 없음). 높이가 다르면 벽이라 잇지 않는다.
+    맞닿은 경계 조각(SEAM_MIN_M 이상)마다 SEAM_SPACING_M 간격(짧으면 가운데 하나)으로 놓고, 두 면의 바깥 경계에
+    꼭짓점으로 넣어 두 면 위(경계)에 정확히 놓이게 한다. key = n:seam:<면1>|<면2>:<순번>(면 key 의 "s:" 뺌).
+    반환: (새 노드, links, 보고). nodes 는 이미 있는 노드(가까이 있으면 새로 두지 않음)."""
+    rep = {"seamNodes": 0}
+    shapes = []
+    for s in surfaces:
+        shapes.append((s, MultiPolygon([Polygon(p[0]) for p in s["polygons"]])))
+    have = [(n["x"], n["y"], n["z"]) for n in nodes if n["location"] == "outdoor"]
+    new_nodes, new_links = [], list(links)
+    tree = STRtree([g for _, g in shapes]) if shapes else None
+    for i, (s1, g1) in enumerate(shapes):
+        for j in sorted(int(k) for k in tree.query(g1.buffer(SEAM_TOL_M))):
+            if j <= i:
+                continue
+            s2, g2 = shapes[j]
+            shared = g1.boundary.intersection(g2.buffer(SEAM_TOL_M))
+            pieces = [shared] if shared.geom_type == "LineString" else list(getattr(shared, "geoms", []))
+            pieces = [p for p in pieces if p.geom_type == "LineString" and p.length >= SEAM_MIN_M]
+            k = 0
+            for piece in pieces:
+                n_pts = max(1, int(piece.length // SEAM_SPACING_M))
+                step = piece.length / n_pts
+                for m in range(n_pts):
+                    p = piece.interpolate(step * (m + 0.5))
+                    x, y = round(p.x, 2), round(p.y, 2)
+                    z1, z2 = surface_z(s1["top"], x, y), surface_z(s2["top"], x, y)
+                    if abs(z1 - z2) > STEP_OK_M:
+                        continue
+                    z = round((z1 + z2) / 2, 2)
+                    if any(math.hypot(hx - x, hy - y) <= SNAP_M and abs(hz - z) <= AREA_DZ_M for hx, hy, hz in have):
+                        continue
+                    k += 1
+                    key = f"n:seam:{s1['key'][2:]}|{s2['key'][2:]}:{k}"
+                    new_nodes.append(
+                        {
+                            "key": key,
+                            "location": "outdoor",
+                            "buildingKey": None,
+                            "floorKey": None,
+                            "kind": "junction",
+                            "x": x,
+                            "y": y,
+                            "z": z,
+                            "estimated": True,
+                        }
+                    )
+                    have.append((x, y, z))
+                    for s in (s1, s2):
+                        part = min(s["polygons"], key=lambda pp: Polygon(pp[0]).exterior.distance(Point(x, y)))
+                        _insert_vertex(part[0], [x, y])
+                        new_links.append({"surfaceKey": s["key"], "nodeKey": key})
+                    rep["seamNodes"] += 1
+    new_links.sort(key=lambda w: (w["surfaceKey"], w["nodeKey"]))
+    return new_nodes, new_links, rep

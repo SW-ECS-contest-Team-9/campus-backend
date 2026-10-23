@@ -436,6 +436,10 @@ def build(src: dict) -> tuple[dict, dict]:
         before = {n["key"] for n in nodes}
         nodes, edges, surf_nodes, split_rep = surfaces.split_edges(surf, surf_nodes, nodes, edges)
         surf_rep.update(split_rep)
+        # 같은 높이로 맞닿은 면 사이 이음 노드(기단 조각이 달라도 한 바닥이면 이어지게)
+        seams, surf_nodes, seam_rep = surfaces.seam_nodes(surf, surf_nodes, nodes)
+        nodes = nodes + seams
+        surf_rep.update(seam_rep)
         for n in nodes:
             if n["key"] in before:
                 continue

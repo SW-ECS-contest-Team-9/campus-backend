@@ -348,7 +348,7 @@ def test_transform_splits_road_through_surface_without_nodes():
     assert [e["key"] for e in c["edges"]] == ["e:rx~1", "e:rx~2", "e:rx~3"]
     assert {w["nodeKey"] for w in c["walkSurfaceNodes"]} == {"n:rx~1", "n:rx~2"}
     assert all(e.get("indicators") for e in c["edges"])  # 나눈 길도 지표가 있다
-    assert rep["surfaces"]["boundaryNodes"] == 2
+    assert rep["surfaces"]["boundaryNodes"] == 2 and rep["surfaces"]["seamNodes"] == 0
 
 
 # ---------- 면 위 아무 점에서 출발·도착 (읽을 때) ----------
@@ -423,3 +423,55 @@ def test_point_routes_do_not_change_the_shared_index():
     idx.route_points((10.0, 5.0, 101.0), (5.0, 15.0, 100.5), "fastest")
     assert (len(idx.nodes), len(idx.edges), sum(len(v) for v in idx.out.values())) == before
     assert "q:from" not in idx.nodes
+
+
+# ---------- 같은 높이로 맞닿은 두 면 사이 이음 노드 (가져올 때) ----------
+
+
+def _two_surfaces(left_top, right_top):
+    lo, hi = [[0, 0], [10, 0], [10, 30], [0, 30]], [[10, 0], [20, 0], [20, 30], [10, 30]]
+    out, links, _ = surfaces.build(
+        [platform("L", lo, top_m=left_top), platform("R", hi, profile=right_top)],
+        [],
+        [[[-30, -30], [50, -30], [50, 50], [-30, 50]]],
+        [],
+        [],
+        [],
+    )
+    return out, links
+
+
+def test_seam_nodes_join_surfaces_that_meet_at_same_height():
+    # 오른쪽 면은 x 로 오르막(경계 x=10 에서 100.0): 같은 높이로 맞닿음 → 경계 30 m 에 10 m 마다 이음 노드
+    up = {"origin": [10, 0], "direction": [1, 0], "points": [[0, 100.0], [10, 101.0]]}
+    out, links = _two_surfaces(100.0, up)
+    nodes, links2, rep = surfaces.seam_nodes(out, links, [])
+    seams = [n for n in nodes if n["key"].startswith("n:seam:")]
+    assert sorted(round(n["y"]) for n in seams) == [5, 15, 25] and {n["x"] for n in seams} == {10.0}
+    assert all(n["z"] == 100.0 and n["location"] == "outdoor" for n in seams)
+    by_s = {}
+    for w in links2:
+        by_s.setdefault(w["surfaceKey"], set()).add(w["nodeKey"])
+    assert by_s["s:L"] == by_s["s:R"] == {n["key"] for n in seams}
+    assert rep["seamNodes"] == 3
+    a, b = node("n:a", 2, 15, 100.0), node("n:b", 18, 15, 100.8)
+    idx = MapIndex(
+        pkg(
+            {n["key"]: n for n in [*seams, a, b]},
+            [],
+            surfaces=out,
+            surface_nodes=links2 + members("s:L", ["n:a"]) + members("s:R", ["n:b"]),
+        )
+    )
+    assert idx.route("n:a", "n:b", "shortest")["nodeKeys"] == [
+        "n:a",
+        seams[[round(n["y"]) for n in seams].index(15)]["key"],
+        "n:b",
+    ]
+
+
+def test_no_seam_where_surfaces_meet_with_a_step():
+    step = {"origin": [10, 0], "direction": [1, 0], "points": [[0, 100.5], [10, 101.0]]}  # 경계에서 0.5 m 턱
+    out, links = _two_surfaces(100.0, step)
+    nodes, links2, rep = surfaces.seam_nodes(out, links, [])
+    assert nodes == [] and links2 == links and rep["seamNodes"] == 0
