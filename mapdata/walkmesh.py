@@ -1021,8 +1021,8 @@ class MeshRouter:
                                     found.setdefault(key, [None] * nm)
                                     for m in modes:
                                         found[key][m] = c[0]
-                for (s, t), cs in found.items():
-                    self.aadj[s].append((t, ("block", mi, b), cs))
+                for s, t in sorted(found):  # (출발, 도착) 순(앱이 방식마다 따로 만들어도 같은 순서)
+                    self.aadj[s].append((t, ("block", mi, b), found[(s, t)]))
         for a, va, b, vb, d in self.seam_links:
             A, B = self.meshes[a], self.meshes[b]
             cs = []
