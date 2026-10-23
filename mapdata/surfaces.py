@@ -6,6 +6,7 @@
 면 하나 = 윗면이 같은 기단(같은 topM 또는 같은 topProfile)을 합친 것
           ∩ 사람이 다니는 곳 외곽(사용자 그림, walkable_boundary)
           − 건물 발자국 − 면 위로 솟은 구조물(벽·화단·턱·계단 단·나무 줄기 등)
+  · 건물 지붕 높이가 면 높이와 AREA_DZ_M 안이면 그 면은 옥상 위 바닥이라 그 건물 발자국은 빼지 않는다(수인관 옥상 풋살장 앞 마당).
   · 화단(planting)·암석(rock) 기단은 걷는 면이 아니다.
   · 다른 높이 면 사이는 벽이라 면끼리 잇지 않는다(면마다 따로).
   · 노드는 면 높이와 AREA_DZ_M 안, 면에서 SNAP_M 안이면 그 면 위 노드. 면 밖에 조금 걸친 노드(문 앞 등)는
@@ -104,11 +105,13 @@ def _rings_out(g) -> list:
     return out
 
 
-def build(platforms, solids, outline, building_rings, zones, nodes) -> tuple[list, list, dict]:
-    """반환: (walkSurfaces, walkSurfaceNodes, 보고). nodes 는 꾸러미 노드(바깥 노드만 씀)."""
-    rep = {"platforms": len(platforms), "skippedMaterial": [], "skippedNoTop": [], "obstaclesCut": 0}
+def build(platforms, solids, outline, building_rings, zones, nodes, building_roofs=None) -> tuple[list, list, dict]:
+    """반환: (walkSurfaces, walkSurfaceNodes, 보고). nodes 는 꾸러미 노드(바깥 노드만 씀).
+    building_roofs: building_rings 와 같은 차례의 지붕 높이(모르면 None). 면이 그 지붕 위 바닥이면 그 발자국은 빼지 않는다."""
+    rep = {"platforms": len(platforms), "skippedMaterial": [], "skippedNoTop": [], "obstaclesCut": 0, "onRoof": []}
     walk = unary_union([_poly(r) for r in outline]) if outline else None
-    blds = unary_union([_poly(r) for r in building_rings]) if building_rings else None
+    roofs = list(building_roofs) if building_roofs is not None else [None] * len(building_rings)
+    bld_polys = [(_poly(r), roof) for r, roof in zip(building_rings, roofs)]
     groups: dict[str, dict] = {}
     for p in platforms:
         if (p.get("material") or "") in NOT_WALKABLE:
@@ -131,8 +134,18 @@ def build(platforms, solids, outline, building_rings, zones, nodes) -> tuple[lis
         geom = unary_union(g["polys"])
         if walk is not None:
             geom = geom.intersection(walk)
-        if blds is not None and not geom.is_empty:
-            geom = geom.difference(blds)
+        if bld_polys and not geom.is_empty:
+            cut_b = []
+            for bp, roof in bld_polys:
+                if not bp.intersects(geom):
+                    continue
+                c = bp.representative_point()
+                if roof is not None and abs(float(roof) - surface_z(g["top"], c.x, c.y)) <= AREA_DZ_M:
+                    rep["onRoof"].append(sorted(g["ids"])[0])
+                    continue
+                cut_b.append(bp)
+            if cut_b:
+                geom = geom.difference(unary_union(cut_b))
         if geom.is_empty or geom.area < MIN_PART_M2:
             continue
         top = g["top"]

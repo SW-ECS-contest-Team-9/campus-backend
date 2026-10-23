@@ -134,9 +134,10 @@ def build(src: dict) -> tuple[dict, dict]:
     floor_by_bld: dict[str, list[dict]] = defaultdict(list)
     for name, parts in sorted(groups.items()):
         main = next((p for p in parts if scene_names[p["id"]] == p["id"] or p.get("name") == name), parts[0])
-        rings = []
+        rings, roofs = [], []
         for p in parts:
             for ring in p["rings_lonlat"]:
+                roofs.append(p.get("roof_m"))
                 xs, ys = tr.transform([c[0] for c in ring], [c[1] for c in ring])
                 pts = [[round(x, 2), round(y, 2)] for x, y in zip(xs, ys)]
                 if len(pts) > 1 and pts[0] == pts[-1]:
@@ -184,6 +185,7 @@ def build(src: dict) -> tuple[dict, dict]:
                 "_ground": main.get("ground_floors") or (len(codes) - under if codes else None),
                 "_under": under if codes else None,
                 "_rings": rings,
+                "_roofs": roofs,
             }
         )
     bld_keys = {b["key"] for b in buildings}
@@ -430,6 +432,7 @@ def build(src: dict) -> tuple[dict, dict]:
             [r for b in buildings for r in b.get("_rings") or []],
             walk.get("zones", []),
             nodes,
+            [z for b in buildings for z in b.get("_roofs") or [None] * len(b.get("_rings") or [])],
         )
         surf_rep["walkableFile"] = walk.get("file")
         # 길이 면 경계를 지나는 곳에 노드(면 안에 노드가 없는 넓은 면도 길과 이어지게)

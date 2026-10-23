@@ -65,6 +65,21 @@ def test_build_excludes_planting_and_merges_same_top():
     assert math.isclose(sum(_area(p[0]) for p in out[0]["polygons"]), 200.0, rel_tol=1e-6)
 
 
+def test_build_keeps_roof_yard_but_cuts_taller_building():
+    # 옥상 마당: 지붕 100.1 위 100.2 면은 그 건물 발자국을 빼지 않고, 지붕 120 건물·지붕 모르는 건물은 뺀다
+    plats = [platform("YARD", SQ, top_m=100.2)]
+    roof_bld = [[0, 0], [20, 0], [20, 10], [0, 10]]
+    tall = [[0, 10], [5, 10], [5, 15], [0, 15]]
+    unknown = [[15, 15], [20, 15], [20, 20], [15, 20]]
+    out, _, rep = surfaces.build(
+        plats, [], [[[-1, -1], [30, -1], [30, 30], [-1, 30]]], [roof_bld, tall, unknown], [], [], [100.1, 120.0, None]
+    )
+    assert math.isclose(
+        sum(_area(p[0]) - sum(_area(h) for h in p[1:]) for p in out[0]["polygons"]), 400 - 25 - 25, rel_tol=1e-6
+    )
+    assert rep["onRoof"] == ["YARD"]
+
+
 def test_build_cuts_obstacles_that_stand_on_the_surface_only():
     plats = [platform("P", SQ, top_m=100.0)]
     sols = [

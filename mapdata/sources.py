@@ -242,6 +242,7 @@ def load_api(base: str, export_path: str | None = None) -> dict:
                 "id": b["buildingId"],
                 "name": b.get("name"),
                 "ground_floors": b.get("groundFloors"),
+                "roof_m": b.get("roofM"),
                 "rings_lonlat": [p[0] for p in polys],
                 "floor_names": win.get("floorNames"),
                 "floors_m": win.get("floorsM"),
