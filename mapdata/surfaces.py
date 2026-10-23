@@ -15,7 +15,7 @@
 import json
 from pathlib import Path
 
-from shapely import STRtree
+from shapely import STRtree, get_coordinates
 from shapely.geometry import MultiPolygon, Point, Polygon
 from shapely.ops import unary_union
 
@@ -141,8 +141,10 @@ def build(platforms, solids, outline, building_rings, zones, nodes) -> tuple[lis
                 s, sg = solids[i], solid_geoms[i]
                 if s.get("fromM") is None or s.get("toM") is None or not sg.intersects(geom):
                     continue
-                hs = [surface_z(top, x, y) for x, y in list(sg.exterior.coords)[:-1]]
-                if float(s["toM"]) > min(hs) + STEP_OK_M and float(s["fromM"]) < max(hs) + HEADROOM_M:
+                hs = [surface_z(top, x, y) for x, y in get_coordinates(sg)]
+                # 윗면이 그 밑 면의 가장 높은 곳보다 STEP_OK_M 넘게 솟고, 밑면이 머리 높이 아래면 막힘.
+                # (기운 면 위 평평한 덧판·포장 조각은 윗면이 오르막 쪽 면 높이 정도라 막지 않는다)
+                if float(s["toM"]) > max(hs) + STEP_OK_M and float(s["fromM"]) < max(hs) + HEADROOM_M:
                     cut.append(sg)
         if cut:
             geom = geom.difference(unary_union(cut))

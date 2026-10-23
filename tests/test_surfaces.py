@@ -79,6 +79,16 @@ def test_build_cuts_obstacles_that_stand_on_the_surface_only():
     assert rep["obstaclesCut"] == 1
 
 
+def test_build_keeps_flat_dressing_on_slope_but_cuts_wall():
+    plats = [platform("P", SQ, profile=SLOPE_X["profile"])]
+    sols = [
+        solid("PAINT", [[2, 2], [8, 2], [8, 8], [2, 8]], 99.5, 100.9),  # 기운 면(100.2~100.8) 위 평평한 덧판
+        solid("WALL", [[12, 2], [13, 2], [13, 8], [12, 8]], 100.0, 102.0),
+    ]
+    out, _, rep = surfaces.build(plats, sols, [[[-1, -1], [30, -1], [30, 30], [-1, 30]]], [], [], [])
+    assert rep["obstaclesCut"] == 1
+
+
 def test_build_snaps_door_node_just_outside_into_surface():
     # 건물 발자국을 빼면 문 노드가 면 경계 밖 0.3 m 에 놓인다: 면에 붙이고 그 노드에서 면으로 들어가는 길은 남긴다.
     bld = [[[8, 15], [12, 15], [12, 25], [8, 25]]]
