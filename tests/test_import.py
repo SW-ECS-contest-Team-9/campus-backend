@@ -177,3 +177,30 @@ def test_package_carries_indicators_and_route_modes(clean):
     assert e["e:r4"]["indicators"]["steps"] == 25
     assert "landmark" in {x["key"]: x for x in pkg["nodes"]}["n:o1"]["indicators"]
     assert set(pkg["routeModes"]) >= {"shortest", "fastest", "avoidStairs", "accessible", "rainProtected", "nightSafe"}
+
+
+def _import_release_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "import_release", Path(__file__).resolve().parent.parent / "scripts" / "import_release.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_import_release_uses_default_surface_paths_when_they_exist(tmp_path, monkeypatch):
+    mod = _import_release_module()
+    (tmp_path / "structures").mkdir()
+    (tmp_path / "walk.geojson").write_text("{}", encoding="utf8")
+    monkeypatch.setattr(mod, "DEFAULT_STRUCTURES", tmp_path / "structures")
+    monkeypatch.setattr(mod, "DEFAULT_WALKABLE", tmp_path / "walk.geojson")
+    logs = []
+    assert mod.with_defaults(None, None, logs.append) == (str(tmp_path / "structures"), str(tmp_path / "walk.geojson"))
+    assert len(logs) == 2 and all("기본값 사용" in m for m in logs)
+    # 준 값은 그대로, 기본 경로가 없으면 비워 두고 알린다
+    monkeypatch.setattr(mod, "DEFAULT_WALKABLE", tmp_path / "none.geojson")
+    logs.clear()
+    assert mod.with_defaults("S", None, logs.append) == ("S", None)
+    assert len(logs) == 1 and "걷는 면 없이" in logs[0]
