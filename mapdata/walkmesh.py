@@ -5,10 +5,16 @@
     평평하면 최소 외접 사각형의 긴 변. 열린 면(a:..)은 높이 함수가 다른 걷는 면이 덮은 곳을 뺀다(걷는 면이 이김).
   · 길 띠(kind band): 면 밖 바깥 길을 길 폭(모르면 보행 2.0 m, 차와 같이 쓰는 길 3.0 m)만큼 띠로 덮은 것.
     높이는 길 중심선의 가장 가까운 점 높이.
+  · 실내 층(kind floor): 건물 층(floorKey)마다 실내 빈 곳(복도·로비·연결 통로 다각형, 트래커 interiors.geojson)과
+    빈 곳이 없는 평평한 복도 길(폭 모르면 2.4 m 띠)을 합친 바닥. 1 m 칸. 층 높이가 다르면 다른 그물이고,
+    층 사이는 계단·승강기 같은 길 간선으로만 간다. 실내 노드는 같은 층 그물에만, 바깥 노드는 바깥 그물에만 붙는다.
   · 칸(한 변 cell m) = 세모 넷 S(아래 변)·E(오른 변)·N(위 변)·W(왼 변), 모두 칸 가운데 꼭짓점을 낀다.
     면(구멍 포함) 안에 통째로 드는 세모만 쓴다. 칸마다 4 비트(S=1, E=2, N=4, W=8).
-  · 칸마다 비용 등급(classes[cls]): 지붕·조명·차량·기울기(길 띠는 그 길의 지표)로 정하고, 등급마다 방식별 1 m 비용
-    (ppm 정수, None = 못 지나감)을 싣는다. 서버·앱이 같은 정수 비용으로 같은 길을 찾는다.
+  · 칸마다 비용 등급 번호(cls): 지붕·조명·차량·기울기(길 띠는 그 길의 지표)로 정하고, 등급마다 방식별 1 m 비용
+    (ppm 정수, None = 못 지나감)을 꾸러미 공용 표(walkMeshClasses) 한 곳에 싣는다. 서버·앱이 같은 정수 비용으로
+    같은 길을 찾는다.
+  · 이음(seams): 같은 높이로 맞닿거나 겹친 두 그물의 경계 꼭짓점 짝. 가져올 때 계산해 앞 그물 항목에 싣는다.
+    두 꼭짓점을 잇는 선분이 두 면 외곽(합친 것) 안에 머물 때만 잇는다(얇은 벽을 넘지 않게). 실내·바깥은 잇지 않는다.
 
 경로(서버 MeshRouter, 앱 src/route/mesh.ts 가 같은 계산):
   · 그래프 꼭짓점 = 세모 꼭짓점, 간선 = 쓸 수 있는 세모의 변. 간선 비용 = round(3D 길이 mm × ppm / 10⁶), 정수.
@@ -16,12 +22,14 @@
     관문 사이 구역 안 최단 비용을 읽을 때 미리 계산해 두고, 경로는 (꾸러미 길 + 관문 표) 그래프에서 찾는다.
     찾은 뒤 지난 구역만 다시 풀어 꼭짓점 줄을 얻는다.
   · 줄 당기기: 꼭짓점 줄을 앞에서부터 "같은 비용 등급 세모만 지나는 직선"으로 보이는 가장 먼 점으로 건너뛰어 편다.
-    같은 높이로 이어진 그물(이음)도 한 직선으로 넘는다(높이 끊김 검사).
+    같은 높이로 이어진 그물(이음)도 한 직선으로 넘는다(높이 끊김 검사). 그물이 바뀌며 빈 틈을 건너는 곳은
+    그 두 그물 사이에 이음이 있을 때만.
 꾸러미(walkMeshes)에는 세모를 나열하지 않고 그물마다 원점·축·칸 크기·칸 수·비트 묶음·등급만 싣는다.
 """
 
 import base64
 import heapq
+import json
 import math
 import time
 from collections import defaultdict
@@ -44,6 +52,9 @@ BAND_WIDE_M = 3.0  # 길 띠 폭이 이 이상이면 2 m 칸
 BAND_WALK_M, BAND_SHARED_M = 2.0, 3.0  # 폭 모를 때 기본값
 BAND_KINDS = {"walkway", "sidewalk", "crossing", "vehicle_road", "ramp"}
 MIN_BAND_M2 = 1.0
+CORRIDOR_M = 2.4  # 실내 빈 곳이 없는 복도 띠 폭(폭 모를 때)
+VOID_KINDS = {"corridor", "lobby", "link"}  # interiors.geojson 에서 걷는 바닥인 빈 곳(계단실·승강기 통로는 아님)
+SEAM_TOL_M = 0.05  # 이음 선분이 두 면 외곽 밖으로 이만큼까지 나가도 안으로 본다(맞닿은 경계)
 AREA_CUT_DZ_M = 1.8  # 열린 면과 겹친 걷는 면 높이 차가 이 안이면 같은 바닥(걷는 면이 이김), 넘으면 위·아래 다른 층
 COVER_TOL_M = 0.01  # 세모가 면 경계에서 이만큼 밖으로 나가도 안으로 본다(반올림 오차)
 ATTACH_CELLS = 1.5  # 노드·점을 이 반경(칸 크기 배수) 안 꼭짓점에 잇는다
@@ -384,7 +395,6 @@ def band_class(e: dict) -> dict:
     """길 띠 등급 = 그 길의 1 m 비용(길 지표 그대로)."""
     i = e["indicators"]
     return {
-        "edge": e["key"],
         "f": _factors(e, i),
         "coveredRatio": i.get("coveredRatio"),
         "litRatio": i.get("litRatio"),
@@ -403,6 +413,22 @@ def _shared_source(src: dict) -> bool:
     if "polygons" in src:  # 걷는 면: 아스팔트이거나 빗금 차도·주차면
         return src.get("material") == "asphalt" or any(w in (src.get("name") or "") for w in ("차도", "주차"))
     return src.get("kind") == "parking_aisle"
+
+
+def floor_class() -> dict:
+    """실내 바닥 칸 등급: 평평한 1 m 복도 길의 방식별 비용(지붕 있음, 차 없음)."""
+    t = ind_mod._tobler_s(1.0, 0.0)
+    i = {
+        "walkS": t,
+        "walkSBack": t,
+        "wheelchair": ind_mod.wheelchair_derived("corridor", 0.0, None, "unknown")[0],
+        "coveredRatio": 1.0,
+        "litRatio": None,
+        "vehicle": "none",
+        "indoor": True,
+    }
+    e = {"key": "", "kind": "corridor", "pedestrianAccess": "allowed", "lengthM": 1.0}
+    return {"f": _factors(e, i), "coveredRatio": 1.0, "litRatio": None, "vehicle": "none", "slopePct": 0.0}
 
 
 def _entry(key, kind, sources, name, area_kind, grid, classes, cls, **extra) -> dict:
@@ -444,11 +470,16 @@ def _cell_classes(grid, zf, cls_of) -> tuple[list[dict], list[int]]:
 
 
 def build_entries(
-    content: dict, structs: dict | None = None, keys: list[str] | None = None, bands: bool = True
-) -> list[dict]:
-    """꾸러미(또는 transform 내용) → walkMeshes 항목들: 면 그물 + 길 띠."""
+    content: dict,
+    structs: dict | None = None,
+    keys: list[str] | None = None,
+    bands: bool = True,
+    interiors: list[dict] | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """꾸러미(또는 transform 내용) → (walkMeshes 항목들, 공용 칸 등급 표 walkMeshClasses).
+    면 그물 + 길 띠 + 실내 층 그물, 그물 사이 이음."""
     st = _Structs(structs, content.get("buildings", []))
-    out = []
+    out, outlines = [], []
     planes = plane_groups(content, keys)
     for p in planes:
         grid = build_grid(p["geom"], p["top"], [CELL_M, CELL_NARROW_M, CELL_TINY_M])
@@ -468,6 +499,7 @@ def build_entries(
 
         classes, cls = _cell_classes(grid, zf, cls_of)
         first = p["src"][0]
+        outlines.append(p["geom"])
         out.append(
             _entry(
                 p["key"],
@@ -482,11 +514,188 @@ def build_entries(
             )
         )
     if bands and keys is None:
-        out += _bands(content, planes)
+        for e, g in _bands(content, planes):
+            out.append(e)
+            outlines.append(g)
+    if keys is None:
+        for f in floor_planes(content, interiors):
+            grid = build_grid(f["geom"], None, [CELL_NARROW_M, CELL_TINY_M])
+            if not any(grid["codes"]):
+                continue
+            outlines.append(f["geom"])
+            out.append(
+                _entry(
+                    f["key"],
+                    "floor",
+                    [f["floorKey"]],
+                    "",
+                    "corridor",
+                    grid,
+                    [floor_class()],
+                    [0] * len(grid["codes"]),
+                    top=f["top"],
+                    floorKey=f["floorKey"],
+                    buildingKey=f["buildingKey"],
+                )
+            )
+    classes = _share_classes(out)
+    _add_seams(out, outlines, {e["key"]: e for e in content["edges"]}, classes)
+    return out, classes
+
+
+def _share_classes(entries: list[dict]) -> list[dict]:
+    """그물마다 둔 등급 표를 꾸러미 공용 표 하나로 모으고 cls 번호를 공용 번호로 바꾼다(같은 등급은 한 줄)."""
+    table, index = [], {}
+    for e in entries:
+        remap = []
+        for c in e.pop("classes"):
+            ck = repr(sorted(c.items()))
+            if ck not in index:
+                index[ck] = len(table)
+                table.append(c)
+            remap.append(index[ck])
+        runs = e["cls"]
+        e["cls"] = encode_runs([remap[runs[k]] for k in range(0, len(runs), 2) for _ in range(runs[k + 1])])
+    return table
+
+
+def _add_seams(entries: list[dict], outlines: list, edges: dict, classes: list[dict]) -> None:
+    """같은 높이(차 STEP_OK_M 안)로 맞닿거나 겹친 두 그물: 한 그물 가장자리 꼭짓점 → 다른 그물의 가장 가까운 꼭짓점
+    (LINK_CELLS 칸 안). 두 꼭짓점을 잇는 선분이 두 면 외곽(합친 것, SEAM_TOL_M 여유) 안에 머무는 것 가운데 가장
+    가까운 것만 잇는다(얇은 벽 너머는 안 잇는다). 실내 층 그물과 바깥 그물은 잇지 않는다(문 길로만).
+    결과는 앞 그물 항목의 seams = [[뒤 그물 key, [꼭짓점, 꼭짓점, ...]], ...]."""
+    ms = [Mesh(e, edges, classes) for e in entries]
+    indoor = [e["kind"] == "floor" for e in entries]
+    regions: dict = {}
+    links: dict = {}
+    for ai, A in enumerate(ms):
+        for bi, B in enumerate(ms):
+            if bi == ai or indoor[ai] != indoor[bi]:
+                continue
+            r = LINK_CELLS * max(A.cell, B.cell)
+            if not (
+                A.bbox[0] - r <= B.bbox[2]
+                and B.bbox[0] - r <= A.bbox[2]
+                and A.bbox[1] - r <= B.bbox[3]
+                and B.bbox[1] - r <= A.bbox[3]
+            ):
+                continue
+            pair = (min(ai, bi), max(ai, bi))
+            for v in A.rim:
+                x, y, z = A.xyz(v)
+                if not _in_bbox(B.bbox, x, y, r):
+                    continue
+                cands = [
+                    (dist_mm((x, y, z), B.xyz(w)), w) for w in B.near_vertices(x, y, r) if abs(B.zs[w] - z) <= STEP_OK_M
+                ]
+                for d, w in sorted(cands, key=lambda c: c[0]):  # 같은 거리면 near_vertices 순서(앞 것)
+                    if pair not in regions:
+                        regions[pair] = unary_union([outlines[ai], outlines[bi]]).buffer(SEAM_TOL_M)
+                        shapely.prepare(regions[pair])
+                    q = B.xyz(w)
+                    seg = shapely.Point(x, y) if (x, y) == q[:2] else LineString([(x, y), q[:2]])
+                    if regions[pair].covers(seg):
+                        key = (ai, v, bi, w) if ai < bi else (bi, w, ai, v)
+                        links.setdefault(key, d)
+                        break
+    per: dict = defaultdict(lambda: defaultdict(list))
+    for ai, v, bi, w in sorted(links):
+        per[ai][bi] += [v, w]
+    for ai, e in enumerate(entries):
+        e.pop("seams", None)
+        if per.get(ai):
+            e["seams"] = [[entries[bi]["key"], flat] for bi, flat in sorted(per[ai].items())]
+
+
+def floor_planes(content: dict, interiors: list[dict] | None) -> list[dict]:
+    """실내 층 바닥: (층, 높이)마다 빈 곳 다각형(복도·로비·연결 통로) + 빈 곳이 없는 평평한 복도 길 띠.
+    빈 곳 높이는 그 층 floorsM, 길 띠 높이는 길 높이. 같은 층에서 높이 차 STEP_OK_M 안이면 한 바닥."""
+    from mapdata.transform import floor_code
+
+    def norm(name):
+        return (name or "").removeprefix("추가-").replace(" ", "")
+
+    nodes = {n["key"]: n for n in content["nodes"]}
+    bld = {norm(b["name"]): b for b in content.get("buildings", [])}
+    floors = {(f["buildingKey"], f["code"]): f for f in content.get("floors", [])}
+    fkeys = {f["key"]: f for f in content.get("floors", [])}
+    groups: dict[str, list[dict]] = defaultdict(list)
+
+    def add(fk, z, geom):
+        for g in groups[fk]:
+            if abs(g["z"] - z) <= STEP_OK_M:
+                g["parts"].append(geom)
+                return
+        groups[fk].append({"z": z, "parts": [geom]})
+
+    voided = set()
+    for f in interiors or []:
+        b = bld.get(norm(f["building"]))
+        if f["kind"] not in VOID_KINDS or b is None:
+            continue
+        geom = _geom(f["polygons"])
+        for fl, z in zip(f["floors"], f["floorsM"]):
+            fr = floors.get((b["key"], floor_code(fl) or fl))
+            if fr is None:
+                continue
+            add(fr["key"], round(float(z), 2), geom)
+            voided.update((fr["key"], r) for r in f["roads"])
+    for e in sorted(content["edges"], key=lambda e: e["key"]):
+        a, b = nodes[e["from"]], nodes[e["to"]]
+        if (
+            e["kind"] != "corridor"
+            or e["pedestrianAccess"] == "prohibited"
+            or a["location"] != "indoor"
+            or b["location"] != "indoor"
+            or not a["floorKey"]
+            or a["floorKey"] != b["floorKey"]
+            or (a["floorKey"], e["key"][2:10]) in voided
+        ):
+            continue
+        zs = [q[2] for q in e["geometry"]]
+        line = LineString([q[:2] for q in e["geometry"]])
+        if max(zs) - min(zs) > STEP_OK_M or line.length <= 0:  # 기운 복도는 길 간선으로만
+            continue
+        add(a["floorKey"], round(sum(zs) / len(zs), 2), line.buffer((e.get("widthM") or CORRIDOR_M) / 2))
+    out = []
+    for fk in sorted(groups):
+        gs = sorted(groups[fk], key=lambda g: g["z"])
+        for g in gs:
+            out.append(
+                {
+                    "key": f"m:i:{fk[2:]}" + (f"@{g['z']}" if len(gs) > 1 else ""),
+                    "top": {"z": g["z"]},
+                    "geom": unary_union(g["parts"]),
+                    "floorKey": fk,
+                    "buildingKey": fkeys[fk]["buildingKey"],
+                }
+            )
     return out
 
 
-def _bands(content: dict, planes: list[dict]) -> list[dict]:
+def load_interiors(path: str) -> list[dict]:
+    """트래커 interiors.geojson(5186) → [{building, kind, floors, floorsM, roads, polygons}]."""
+    with open(path, encoding="utf8") as f:
+        fc = json.load(f)
+    out = []
+    for ft in fc["features"]:
+        g = ft["geometry"]
+        polys = g["coordinates"] if g["type"] == "MultiPolygon" else [g["coordinates"]]
+        p = ft["properties"]
+        out.append(
+            {
+                "building": p["building"],
+                "kind": p["kind"],
+                "floors": p["floors"],
+                "floorsM": p["floorsM"],
+                "roads": p.get("roads") or [],
+                "polygons": polys,
+            }
+        )
+    return out
+
+
+def _bands(content: dict, planes: list[dict]) -> list[tuple[dict, object]]:
     nodes = {n["key"]: n for n in content["nodes"]}
     out = []
     for e in sorted(content["edges"], key=lambda e: e["key"]):
@@ -525,17 +734,20 @@ def _bands(content: dict, planes: list[dict]) -> list[dict]:
             continue
         cl = band_class(e)
         out.append(
-            _entry(
-                f"m:r:{e['key']}",
-                "band",
-                [e["key"]],
-                e["name"] or "",
-                e["kind"],
-                grid,
-                [cl],
-                [0] * len(grid["codes"]),
-                edge=e["key"],
-                widthM=round(float(width), 2),
+            (
+                _entry(
+                    f"m:r:{e['key']}",
+                    "band",
+                    [e["key"]],
+                    e["name"] or "",
+                    e["kind"],
+                    grid,
+                    [cl],
+                    [0] * len(grid["codes"]),
+                    edge=e["key"],
+                    widthM=round(float(width), 2),
+                ),
+                geom,
             )
         )
     return out
@@ -547,7 +759,7 @@ def _bands(content: dict, planes: list[dict]) -> list[dict]:
 class Mesh:
     """walkMeshes 항목 하나 → 꼭짓점·간선·구역. 정수 비용."""
 
-    def __init__(self, entry: dict, edges: dict):
+    def __init__(self, entry: dict, edges: dict, classes: list[dict], cf: list | None = None):
         self.key, self.kind = entry["key"], entry.get("kind", "surface")
         self.entry = entry
         self.cell = float(entry["cell"])
@@ -558,9 +770,8 @@ class Mesh:
         n = cols * rows
         self.codes = decode_bits(entry["tris"], n)
         self.cls = decode_runs(entry["cls"], n)
-        self.classes = entry["classes"]
-        nm = len(MODES)
-        self.cf = [[c["f"][m] for c in self.classes] for m in range(nm)]  # 방식 → 등급 → ppm|None
+        self.classes = classes  # 꾸러미 공용 표
+        self.cf = cf if cf is not None else class_factors(classes)  # 방식 → 등급 → ppm|None
         self.top = entry.get("top")
         self.line = edges[entry["edge"]]["geometry"] if entry.get("edge") else None
         nc = (cols + 1) * (rows + 1)
@@ -750,6 +961,10 @@ class Mesh:
         return True
 
 
+def class_factors(classes: list[dict]) -> list[list]:
+    return [[c["f"][m] for c in classes] for m in range(len(MODES))]
+
+
 def _in_bbox(b, x, y, r) -> bool:
     return b[0] - r <= x <= b[2] + r and b[1] - r <= y <= b[3] + r
 
@@ -757,10 +972,12 @@ def _in_bbox(b, x, y, r) -> bool:
 class MeshRouter:
     """꾸러미 길 그래프(MapIndex) + 보행 그물. 그물이 덮은 면의 면 가상 간선(y:·x:)은 쓰지 않는다."""
 
-    def __init__(self, idx, entries: list[dict]):
+    def __init__(self, idx, entries: list[dict], classes: list[dict]):
         t0 = time.perf_counter()
         self.idx = idx
-        self.meshes = [Mesh(e, idx.edges) for e in entries]
+        cf = class_factors(classes)
+        self.meshes = [Mesh(e, idx.edges, classes, cf) for e in entries]
+        self.by_key = {M.key: M for M in self.meshes}
         self.covered = {k for e in entries if e.get("kind", "surface") == "surface" for k in e["sources"]}
         self.nkeys = [n["key"] for n in idx.pkg["nodes"]]
         self.nid = {k: i for i, k in enumerate(self.nkeys)}
@@ -782,42 +999,31 @@ class MeshRouter:
 
     # ----- 그물 사이 이음 -----
     def _seams(self):
-        """같은 높이(차 STEP_OK_M 안)로 맞닿거나 겹친 두 그물: 한 그물 가장자리 꼭짓점 → 다른 그물의 가장 가까운 꼭짓점."""
-        links = {}
-        ms = self.meshes
-        for ai, A in enumerate(ms):
-            for bi, B in enumerate(ms):
-                if bi == ai:
+        """항목에 실린 이음(가져올 때 _add_seams): (그물 A, 꼭짓점, 그물 B, 꼭짓점, 길이 mm), A < B."""
+        pos = {M.key: i for i, M in enumerate(self.meshes)}
+        links = []
+        for ai, A in enumerate(self.meshes):
+            for bkey, flat in A.entry.get("seams", []):
+                bi = pos.get(bkey)
+                if bi is None:
                     continue
-                r = LINK_CELLS * max(A.cell, B.cell)
-                if not (
-                    A.bbox[0] - r <= B.bbox[2]
-                    and B.bbox[0] - r <= A.bbox[2]
-                    and A.bbox[1] - r <= B.bbox[3]
-                    and B.bbox[1] - r <= A.bbox[3]
-                ):
-                    continue
-                for v in A.rim:
-                    x, y, z = A.xyz(v)
-                    if not _in_bbox(B.bbox, x, y, r):
-                        continue
-                    best = None
-                    for w in B.near_vertices(x, y, r):
-                        if abs(B.zs[w] - z) <= STEP_OK_M:
-                            d = dist_mm((x, y, z), B.xyz(w))
-                            if best is None or d < best[0]:
-                                best = (d, w)
-                    if best:
-                        key = (ai, v, bi, best[1]) if ai < bi else (bi, best[1], ai, v)
-                        links.setdefault(key, best[0])
-        self.links = sorted((*k, d) for k, d in links.items())
+                B = self.meshes[bi]
+                for v, w in zip(flat[0::2], flat[1::2]):
+                    links.append((ai, v, bi, w, dist_mm(A.xyz(v), B.xyz(w))))
+        self.links = sorted(links)
+        self.pairs = {(a, b) for a, _, b, _, _ in self.links}
 
     # ----- 노드 붙이기 -----
-    def attach_point(self, x, y, z, need_inside: bool) -> list[tuple[int, list[tuple[int, int]]]]:
+    def attach_point(
+        self, x, y, z, need_inside: bool, floor_key: str | None = None, by_floor: bool = False
+    ) -> list[tuple[int, list[tuple[int, int]]]]:
         """점이 올라선 그물(높이 차 AREA_DZ_M 안)마다 [(꼭짓점, 길이 mm)]. 세모 안이면 직선으로 보이는 가까운 것
-        ATTACH_MAX 개, 세모 밖(need_inside 가 아니면)이면 가까운 것 ATTACH_OUT_MAX 개."""
+        ATTACH_MAX 개, 세모 밖(need_inside 가 아니면)이면 가까운 것 ATTACH_OUT_MAX 개.
+        by_floor 면 층(floorKey, 바깥 그물은 None)이 floor_key 인 그물에만."""
         out = []
         for mi, M in enumerate(self.meshes):
+            if by_floor and M.entry.get("floorKey") != floor_key:
+                continue
             r = ATTACH_CELLS * M.cell
             if not _in_bbox(M.bbox, x, y, r) or abs(z - M.z(x, y)) > AREA_DZ_M:
                 continue
@@ -837,9 +1043,10 @@ class MeshRouter:
     def _attach_nodes(self):
         self.node_att = {}  # 노드 번호 → [(그물, [(꼭짓점, mm)])]
         for i, n in enumerate(self.idx.pkg["nodes"]):
-            if n["location"] != "outdoor":
+            if n["location"] != "outdoor" and not n["floorKey"]:
                 continue
-            hits = self.attach_point(n["x"], n["y"], n["z"], False)
+            fk = n["floorKey"] if n["location"] == "indoor" else None  # 실내 노드는 같은 층 그물에만
+            hits = self.attach_point(n["x"], n["y"], n["z"], False, fk, True)
             if hits:
                 self.node_att[i] = hits
 
@@ -1252,13 +1459,15 @@ class MeshRouter:
                 nodes_seq.append(e["to"] if e["from"] == it[2] else e["from"])
                 continue
             for ve in self._virtual_edges(it[1], tmp, key_of, len(edges), mode_i):
+                M = self.by_key[ve["meshKey"]]
+                fl = M.entry if M.kind == "floor" else {}
                 for k, p in ((ve["from"], ve["geometry"][0]), (ve["to"], ve["geometry"][-1])):
                     if k not in self.idx.nodes:
                         tmp_nodes[k] = {
                             "key": k,
-                            "location": "outdoor",
-                            "buildingKey": None,
-                            "floorKey": None,
+                            "location": "indoor" if fl else "outdoor",
+                            "buildingKey": fl.get("buildingKey"),
+                            "floorKey": fl.get("floorKey"),
                             "kind": "point",
                             "x": p[0],
                             "y": p[1],
@@ -1278,7 +1487,7 @@ class MeshRouter:
         for r in refs:
             if r[0] == "v" and r[1] not in mesh_ids:
                 mesh_ids.append(r[1])
-        run = _Run([self.meshes[i] for i in mesh_ids], mode_i)
+        run = _Run([self.meshes[i] for i in mesh_ids], mode_i, mesh_ids, self.pairs)
         own = [mesh_ids.index(r[1]) if r[0] == "v" else None for r in refs]  # 점마다 제 그물 자리(노드·점은 None)
         keep = _pull(run, pts, own)
         # 조각마다 (그물, 이 방식의 1 m 비용), 같은 것끼리 한 가상 길
@@ -1320,7 +1529,7 @@ class MeshRouter:
             }
             if M.kind == "surface":
                 e["areaKind"] = M.entry.get("areaKind") or "surface"
-            i = ind_mod.basic_indicators(e, False)
+            i = ind_mod.basic_indicators(e, M.kind == "floor")
             i.update(_class_indicators(cls))
             e["indicators"] = i
             out.append(e)
@@ -1358,9 +1567,10 @@ def _best(dist: dict, seeds: list[tuple[int, int]]):
 class _Run:
     """한 점 줄에 이어 쓰는 그물들(같은 높이로 이어진 그물). 줄 당기기용 보기·높이·등급."""
 
-    def __init__(self, meshes: list[Mesh], mode_i: int = 0):
+    def __init__(self, meshes: list[Mesh], mode_i: int = 0, ids: list[int] | None = None, pairs: set | None = None):
         self.meshes = meshes
         self.mode_i = mode_i
+        self.ids, self.pairs = ids or [], pairs or set()  # 그물 자리 → 전체 번호, 이음이 있는 (작은, 큰) 번호 짝
         self.step = min((M.cell for M in meshes), default=1.0) * LOS_STEP
         self.cell_max = max((M.cell for M in meshes), default=1.0)
 
@@ -1401,6 +1611,8 @@ class _Run:
             M = self.meshes[got[0]]
             if gap and pm is not None and got[0] == pm and not seam:
                 return False
+            if (gap or seam) and pm is not None and got[0] != pm and not self.linked(pm, got[0]):
+                return False  # 틈 건너 다른 그물: 두 그물 사이에 이음이 있을 때만(얇은 벽 너머가 아니게)
             seam = False
             g = M.cf[self.mode_i][M.cls[got[1]]]
             if first:
@@ -1409,6 +1621,10 @@ class _Run:
                 return False
             pm, pz, gap = got[0], M.z(x, y), 0
         return not first and not (gap and qm0 is not None and qm0 == pm)
+
+    def linked(self, p: int, q: int) -> bool:
+        a, b = self.ids[p], self.ids[q]
+        return (min(a, b), max(a, b)) in self.pairs
 
     def _seamy(self, x, y) -> bool:
         """(x, y) 가 둘 이상 그물의 빈 칸이 아닌 칸(쓰는 세모가 있는 칸) 안인가."""

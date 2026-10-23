@@ -184,6 +184,10 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                 "INSERT INTO walk_mesh (release_id, seq, key, entry) VALUES (%s, %s, %s, %s)",
                 [(rid, i, m["key"], Jsonb(m)) for i, m in enumerate(content.get("walkMeshes", []))],
             )
+        if content.get("walkMeshClasses") is not None:
+            conn.execute(
+                "UPDATE map_release SET walk_mesh_classes = %s WHERE id = %s", (Jsonb(content["walkMeshClasses"]), rid)
+            )
     return rid
 
 
@@ -333,6 +337,8 @@ def build_package(conn, rid: int) -> dict:
         ),
         # 보행 그물(걷는 면·길 띠를 칸 4등분 세모로 덮은 격자). 앱이 같은 그물을 다시 만들어 길을 찾는다. 선택 칸.
         "walkMeshes": [r["entry"] for r in q("SELECT entry FROM walk_mesh WHERE release_id = %s ORDER BY seq")],
+        # 보행 그물 칸 등급 공용 표(방식별 1 m 비용 ppm·지표). walkMeshes 의 cls 번호가 가리킨다. 선택 칸.
+        "walkMeshClasses": rel["walk_mesh_classes"] or [],
         # 경로 방식별 비용 규칙(앱이 기기 안에서 같은 규칙으로 길을 찾도록). 선택 칸.
         "routeModes": MODE_SPEC,
     }

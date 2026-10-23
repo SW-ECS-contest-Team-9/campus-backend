@@ -32,7 +32,7 @@ def router(surfaces, nodes=None, edges=(), links=(), areas=(), st=None, bands=Fa
     p = pkg(nodes or {}, list(edges), areas, surfaces=surfaces, surface_nodes=list(links))
     for e in p["edges"]:  # 길 띠는 길 지표가 있어야 만든다
         e.setdefault("indicators", MapIndex(p).ind[e["key"]])
-    p["walkMeshes"] = walkmesh.build_entries(p, st, bands=bands)
+    p["walkMeshes"], p["walkMeshClasses"] = walkmesh.build_entries(p, st, bands=bands)
     return MapIndex(p).mesh
 
 
@@ -59,24 +59,25 @@ def test_bits_and_runs_round_trip():
 
 
 def test_square_plaza_entry_and_rebuild():
-    e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[SQ]], {"z": 100.0})]))[0]
+    es, classes = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[SQ]], {"z": 100.0})]))
+    e = es[0]
     assert e["key"] == "m:s:1" and e["kind"] == "surface" and e["cell"] == 2.0 and (e["cols"], e["rows"]) == (10, 10)
     assert walkmesh.decode_bits(e["tris"], 100) == [15] * 100
-    assert len(e["classes"]) == 1 and e["cls"] == [0, 100]
-    assert len(e["classes"][0]["f"]) == len(MODES)
-    m = walkmesh.Mesh(e, {})
+    assert "classes" not in e and len(classes) == 1 and e["cls"] == [0, 100]
+    assert len(classes[0]["f"]) == len(MODES)
+    m = walkmesh.Mesh(e, {}, classes)
     assert sum(1 for a in m.adj if a) == 11 * 11 + 10 * 10  # 모서리 + 가운데
     assert set(m.edist) == {2000, 1414}
 
 
 def test_narrow_strip_uses_1m_and_tiny_face_uses_half_metre():
-    strip = walkmesh.build_entries(
+    strip, _ = walkmesh.build_entries(
         pkg({}, [], surfaces=[surface("s:1", [[[[0, 0], [30, 0], [30, 1.5], [0, 1.5]]]], {"z": 100.0})])
     )
     assert strip[0]["cell"] == 1.0
     # 0.9 m 폭 띠를 비스듬히: 1 m 칸으로는 거의 안 덮인다 → 0.5 m
     tilted = [[0, 0], [20, 14], [19.48, 14.74], [-0.52, 0.74]]
-    tiny = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[tilted]], {"z": 100.0})]))[0]
+    tiny = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[tilted]], {"z": 100.0})]))[0][0]
     assert tiny["cell"] == 0.5 and tiny["cover"] > 0.27
 
 
@@ -85,7 +86,7 @@ def test_open_area_under_other_height_surface_is_cut_out():
     a2 = area("a:2", [[0, 0], [40, 0], [40, 20], [0, 20]], z=100.0)
     slope = {"profile": {"origin": [20, 0], "direction": [1, 0], "points": [[0, 100.0], [20, 102.0]]}}
     s = surface("s:T", [[[[20, 0], [40, 0], [40, 20], [20, 20]]]], slope)
-    es = walkmesh.build_entries(pkg({}, [], [a2], surfaces=[s]))
+    es, _ = walkmesh.build_entries(pkg({}, [], [a2], surfaces=[s]))
     by = {e["key"]: e for e in es}
     assert set(by) == {"m:a:2", "m:s:T"}
     a = by["m:a:2"]
@@ -102,24 +103,24 @@ def test_open_area_far_below_surface_is_kept():
     """지하 주차장 통로(열린 면 140.0) 위 운동장 걷는 면(148.9): 높이가 멀면 빼지 않는다."""
     a5 = area("a:5", [[0, 0], [20, 0], [20, 20], [0, 20]], z=140.0)
     s = surface("s:F", [[SQ]], {"z": 148.9})
-    by = {e["key"]: e for e in walkmesh.build_entries(pkg({}, [], [a5], surfaces=[s]))}
+    by = {e["key"]: e for e in walkmesh.build_entries(pkg({}, [], [a5], surfaces=[s]))[0]}
     assert by["m:a:5"]["cover"] > 0.9 and walkmesh.decode_bits(by["m:a:5"]["tris"], 100) == [15] * 100
 
 
 def test_cell_classes_from_canopy_lamp_and_slope():
     s = surface("s:1", [[SQ]], {"z": 100.0})
     st = structs(canopies=[[[0, 0], [10, 0], [10, 20], [0, 20]]], lamps=[(20, 20)])
-    e = walkmesh.build_entries(pkg({}, [], surfaces=[s]), st)[0]
-    m = walkmesh.Mesh(e, {})
-    left = e["classes"][m.cls[m.usable(1.0, 1.0)]]  # 왼쪽 아래 칸: 지붕 밑, 가로등 멀다
-    right = e["classes"][m.cls[m.usable(19.0, 19.0)]]  # 오른쪽 위 칸: 지붕 없음, 가로등 가까움
+    es, classes = walkmesh.build_entries(pkg({}, [], surfaces=[s]), st)
+    m = walkmesh.Mesh(es[0], {}, classes)
+    left = classes[m.cls[m.usable(1.0, 1.0)]]  # 왼쪽 아래 칸: 지붕 밑, 가로등 멀다
+    right = classes[m.cls[m.usable(19.0, 19.0)]]  # 오른쪽 위 칸: 지붕 없음, 가로등 가까움
     assert left["coveredRatio"] == 1.0 and left["litRatio"] is None
     assert right["coveredRatio"] == 0.0 and right["litRatio"] == 1.0
     rain = MODES.index("rainProtected")
     assert left["f"][rain] < right["f"][rain]
-    steep = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[SQ]], SLOPE_X)]))[0]
-    assert steep["classes"][0]["slopePct"] == 10.0
-    assert steep["classes"][0]["f"][MODES.index("accessible")] is None  # 1/12 넘음
+    _, steep = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [[SQ]], SLOPE_X)]))
+    assert steep[0]["slopePct"] == 10.0
+    assert steep[0]["f"][MODES.index("accessible")] is None  # 1/12 넘음
 
 
 def test_band_covers_road_outside_surface_only():
@@ -127,10 +128,10 @@ def test_band_covers_road_outside_surface_only():
     e = edge("ab", "a", "b", n)
     p = pkg(n, [e], surfaces=[surface("s:1", [[SQ]], {"z": 100.0})])
     e["indicators"] = MapIndex(p).ind["ab"]
-    es = walkmesh.build_entries(p)
+    es, classes = walkmesh.build_entries(p)
     band = next(x for x in es if x["kind"] == "band")
     assert band["key"] == "m:r:ab" and band["edge"] == "ab" and band["widthM"] == 2.0 and band["cell"] == 1.0
-    assert band["classes"][0]["edge"] == "ab"
+    assert classes[band["cls"][0]]["f"] == walkmesh.band_class(e)["f"]
     covered = sum(bin(c).count("1") for c in walkmesh.decode_bits(band["tris"], band["cols"] * band["rows"])) / 4
     assert 30 <= covered <= 45  # 20 m × 2 m + 끝 반원, 면 안은 빠짐
 
@@ -279,7 +280,7 @@ def test_narrow_neck_that_splits_the_grid_uses_smaller_cells():
 
     g = box(0, 0, 10, 10).union(box(17, 7, 27, 17)).union(LineString([(9, 9), (18, 8)]).buffer(0.65))
     poly = [list(g.exterior.coords)]
-    e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [poly], {"z": 100.0})]))[0]
+    e = walkmesh.build_entries(pkg({}, [], surfaces=[surface("s:1", [poly], {"z": 100.0})]))[0][0]
     assert walkmesh._pieces(walkmesh.decode_bits(e["tris"], e["cols"] * e["rows"]), e["cols"], e["rows"]) == 1
     r = router([surface("s:1", [poly], {"z": 100.0})])
     assert go(r, (2.0, 2.0, 100.0), (25.0, 15.0, 100.0)) is not None
@@ -317,7 +318,7 @@ def test_transform_makes_meshes_and_package_round_trips(clean):
     rid = release.create_draft(clean, c, rep, {"label": "mesh"})
     clean.commit()
     pkg = release.build_package(clean, rid)
-    assert pkg["walkMeshes"] == c["walkMeshes"]
+    assert pkg["walkMeshes"] == c["walkMeshes"] and pkg["walkMeshClasses"] == c["walkMeshClasses"]
     assert release.validate(pkg)["errors"] == []
     out, _ = MapIndex(pkg).route_points("n:a", "n:c", "shortest")
     assert out is not None and out["edgeKeys"][0].startswith("w:")
@@ -353,7 +354,7 @@ def test_one_way_road_gets_no_band():
     e["direction"] = "forward"
     p = pkg(n, [e])
     e["indicators"] = MapIndex(p).ind["ab"]
-    assert walkmesh.build_entries(p) == []
+    assert walkmesh.build_entries(p) == ([], [])
 
 
 def test_line_crosses_seam_gap_between_misaligned_grids():
@@ -369,3 +370,136 @@ def test_line_does_not_jump_hole_inside_one_mesh():
     r = router([surface("s:1", [[SQ, hole]], {"z": 100.0})])
     out = go(r, (5.0, 10.0, 100.0), (15.0, 10.0, 100.0))
     assert out is not None and out["distanceM"] > 18
+
+
+# ---------- 공용 등급 표 ----------
+
+
+def test_class_table_is_shared_by_all_meshes():
+    """같은 등급(평평·지붕 모름·차 없음)인 두 면은 꾸러미 공용 표의 한 줄을 같이 쓴다."""
+    a = surface("s:a", [[[[0, 0], [10, 0], [10, 10], [0, 10]]]], {"z": 100.0})
+    b = surface("s:b", [[[[30, 0], [40, 0], [40, 10], [30, 10]]]], {"z": 105.0})
+    es, classes = walkmesh.build_entries(pkg({}, [], surfaces=[a, b]))
+    assert len(classes) == 1 and all(e["cls"][0] == 0 and "classes" not in e for e in es)
+
+
+# ---------- 이음은 얇은 벽을 넘지 않는다 ----------
+
+
+def test_seam_does_not_join_across_thin_wall():
+    """같은 높이(차 5 cm, 높이 함수가 달라 다른 그물) 두 면 사이 0.3 m 벽: 이음 없음(계단·문 없이 못 감). 맞닿으면 이음."""
+    a = surface("s:a", [[[[0, 0], [10, 0], [10, 10], [0, 10]]]], {"z": 100.0})
+    walled = surface("s:b", [[[[10.3, 0], [20, 0], [20, 10], [10.3, 10]]]], {"z": 100.05})
+    es, _ = walkmesh.build_entries(pkg({}, [], surfaces=[a, walled]))
+    assert not any(e.get("seams") for e in es)
+    assert go(router([a, walled]), (2.0, 5.0, 100.0), (18.0, 5.0, 100.05)) is None
+    touching = surface("s:b", [[[[10, 0], [20, 0], [20, 10], [10, 10]]]], {"z": 100.05})
+    es, _ = walkmesh.build_entries(pkg({}, [], surfaces=[a, touching]))
+    assert es[0]["seams"][0][0] == "m:s:b" and len(es[0]["seams"][0][1]) >= 2
+    assert go(router([a, touching]), (2.0, 5.0, 100.0), (18.0, 5.0, 100.05)) is not None
+
+
+def test_line_does_not_cut_through_thin_wall_between_two_meshes():
+    """ㄷ자: 아래 면 A·위 면 C 사이 0.3 m 벽, 오른쪽 면 B 가 둘을 잇는다. A → C 직선이 벽을 넘지 않는다."""
+    a = surface("s:a", [[[[0, 0], [10, 0], [10, 4], [0, 4]]]], {"z": 100.0})
+    c = surface("s:c", [[[[0, 4.3], [10, 4.3], [10, 8.3], [0, 8.3]]]], {"z": 100.1})
+    b = surface("s:b", [[[[10, 0], [14, 0], [14, 8.3], [10, 8.3]]]], {"z": 100.05})
+    out = go(router([a, b, c]), (1.0, 3.0, 100.0), (1.0, 5.3, 100.1))
+    assert out is not None and out["distanceM"] > 18
+
+
+# ---------- 실내 층 그물 ----------
+
+
+def indoor_case(outdoor=False, door=False):
+    """X 동 1F(100 m) 로비 빈 곳 20 × 10 m(복도 e:aaaaaaaa 를 덮음), 2F(104 m)는 빈 곳 없는 복도 e:bbbbbbbb(띠),
+    계단 e:cccccccc 이 잇는다. outdoor 면 s:o 는 로비 서쪽에 같은 높이로 맞닿음, door 는 문 길."""
+    n = {
+        "a1": node("a1", 1, 5, 100.0, "indoor"),
+        "s1": node("s1", 18, 5, 100.0, "indoor"),
+        "s2": node("s2", 19, 5, 104.0, "indoor"),
+        "b2": node("b2", 1, 5, 104.0, "indoor"),
+    }
+    for k in n:
+        n[k].update(buildingKey="b:X", floorKey="f:X:1F" if n[k]["z"] < 102 else "f:X:2F")
+    es = [
+        edge("e:aaaaaaaa-1", "a1", "s1", n, kind="corridor"),
+        edge("e:cccccccc-1", "s1", "s2", n, kind="stairs"),
+        edge("e:bbbbbbbb-1", "s2", "b2", n, kind="corridor"),
+    ]
+    es[0]["widthM"] = es[2]["widthM"] = 2.4
+    surfs = []
+    if outdoor:  # 바깥 면 위 노드 o(면 위 점이 막힌 조각으로 안 보이게)
+        surfs.append(surface("s:o", [[[[-10, 0], [0, 0], [0, 10], [-10, 10]]]], {"z": 100.0}))
+        n["o"] = node("o", -8, 2, 100.0)
+    if door:
+        n["d"] = node("d", -0.5, 5, 100.0)
+        n["i"] = node("i", 0.5, 5, 100.0, "indoor")
+        n["i"].update(buildingKey="b:X", floorKey="f:X:1F")
+        es += [edge("door", "d", "i", n, kind="corridor"), edge("e:aaaaaaaa-2", "i", "a1", n, kind="corridor")]
+    p = pkg(n, es, surfaces=surfs, surface_nodes=members("s:o", ["d"]) if door else [])
+    p["buildings"] = [{"key": "b:X", "name": "X"}]
+    p["floors"] = [
+        {"key": "f:X:1F", "buildingKey": "b:X", "code": "1F", "floorZ": 100.0},
+        {"key": "f:X:2F", "buildingKey": "b:X", "code": "2F", "floorZ": 104.0},
+    ]
+    interiors = [
+        {
+            "building": "X",
+            "kind": "lobby",
+            "floors": ["1층"],
+            "floorsM": [100.0],
+            "roads": ["aaaaaaaa"],
+            "polygons": [[[[0, 0], [20, 0], [20, 10], [0, 10]]]],
+        },
+        {  # 계단실은 걷는 바닥이 아니다
+            "building": "X",
+            "kind": "stair",
+            "floors": ["1층", "2층"],
+            "floorsM": [100.0, 104.0],
+            "roads": ["cccccccc"],
+            "polygons": [[[[17, 4], [20, 4], [20, 6], [17, 6]]]],
+        },
+    ]
+    for e in p["edges"]:
+        e.setdefault("indicators", MapIndex(p).ind[e["key"]])
+    p["walkMeshes"], p["walkMeshClasses"] = walkmesh.build_entries(p, None, interiors=interiors)
+    return p
+
+
+def test_indoor_floor_meshes_from_voids_and_corridor_bands():
+    p = indoor_case()
+    by = {e["key"]: e for e in p["walkMeshes"] if e["kind"] == "floor"}
+    assert set(by) == {"m:i:X:1F", "m:i:X:2F"}
+    f1, f2 = by["m:i:X:1F"], by["m:i:X:2F"]
+    assert f1["top"] == {"z": 100.0} and f1["floorKey"] == "f:X:1F" and f1["buildingKey"] == "b:X"
+    assert f1["cell"] == 1.0 and f1["cover"] > 0.9  # 로비 빈 곳 20 × 10
+    assert f2["top"] == {"z": 104.0} and f2["cell"] <= 1.0  # 빈 곳 없는 복도: 2.4 m 띠
+    n2 = sum(bin(c).count("1") for c in walkmesh.decode_bits(f2["tris"], f2["cols"] * f2["rows"])) * f2["cell"] ** 2 / 4
+    assert 35 <= n2 <= 2.4 * 18 + 5
+    cls = p["walkMeshClasses"][f1["cls"][0]]
+    assert cls["coveredRatio"] == 1.0 and cls["vehicle"] == "none"
+
+
+def test_indoor_lobby_diagonal_and_floor_change_only_by_stairs():
+    r = MapIndex(indoor_case()).mesh
+    out = go(r, (2.0, 1.0, 100.0), (17.0, 9.0, 100.0))
+    assert out is not None and straight(out["geometry"]) and len(out["edgeKeys"]) == 1
+    assert out["steps"][0]["kind"] == "corridor" and out["summary"]["indoorM"] == round(out["distanceM"], 1)
+    up = go(r, (2.0, 8.0, 100.0), (5.0, 5.0, 104.0))
+    assert up is not None and "e:cccccccc-1" in up["edgeKeys"]
+    assert up["nodeKeys"][-1] == "q:to" and up["steps"][-1]["to"]["floorKey"] == "f:X:2F"
+    assert go(r, (2.0, 8.0, 100.0), (5.0, 5.0, 104.0), "avoidStairs") is None
+
+
+def test_indoor_and_outdoor_meshes_join_only_through_door_edge():
+    r = MapIndex(indoor_case(outdoor=True)).mesh
+    out, ends = r.route_points((-5.0, 5.0, 100.0), (5.0, 5.0, 100.0), "shortest")
+    assert ends[0]["areas"] == ["m:s:o"] and out is None  # 같은 높이로 맞닿아도 벽(문 없음)
+    r = MapIndex(indoor_case(outdoor=True, door=True)).mesh
+    out = go(r, (-5.0, 8.0, 100.0), (5.0, 8.0, 100.0))
+    assert out is not None and "door" in out["edgeKeys"]
+    # 바깥 노드는 실내 그물에, 실내 노드는 바깥 그물에 붙지 않는다
+    for i, hits in r.node_att.items():
+        loc = r.idx.pkg["nodes"][i]["location"]
+        assert all((r.meshes[mi].kind == "floor") == (loc == "indoor") for mi, _ in hits)

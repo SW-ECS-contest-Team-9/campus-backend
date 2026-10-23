@@ -473,11 +473,15 @@ def build(src: dict) -> tuple[dict, dict]:
     rep["surfaces"] = surf_rep
     rep["indicators"] = indicators.annotate(content, structs)
     rep["indicators"]["structureFiles"] = structs.get("files") if structs else None
-    # 보행 그물: 걷는 면·열린 면 + 면 밖 바깥 길 띠(길 지표가 붙은 뒤에)
-    content["walkMeshes"] = walkmesh.build_entries(content, structs)
+    # 보행 그물: 걷는 면·열린 면 + 면 밖 바깥 길 띠(길 지표가 붙은 뒤에) + 실내 층(빈 곳 원천이 있으면 빈 곳, 없으면 복도 띠)
+    content["walkMeshes"], content["walkMeshClasses"] = walkmesh.build_entries(
+        content, structs, interiors=src.get("interiors")
+    )
     rep["walkMeshes"] = {
         "surfaces": sum(m["kind"] == "surface" for m in content["walkMeshes"]),
         "bands": sum(m["kind"] == "band" for m in content["walkMeshes"]),
+        "floors": sum(m["kind"] == "floor" for m in content["walkMeshes"]),
+        "classes": len(content["walkMeshClasses"]),
         "cells": {str(c): sum(m["cell"] == c for m in content["walkMeshes"]) for c in (2.0, 1.0, 0.5)},
     }
     rep["counts"] = {k: len(v) for k, v in content.items()}

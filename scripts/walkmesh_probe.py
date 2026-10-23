@@ -29,13 +29,14 @@ def main(path, structures=None):
     pkg = json.load(open(path, encoding="utf8"))
     old = copy.deepcopy(pkg)
     old.pop("walkMeshes", None)
+    old.pop("walkMeshClasses", None)
     if not pkg.get("walkMeshes"):
         st = indicators.load_structures(structures) if structures else None
         t = time.perf_counter()
-        pkg["walkMeshes"] = walkmesh.build_entries(pkg, st)
+        pkg["walkMeshes"], pkg["walkMeshClasses"] = walkmesh.build_entries(pkg, st)
         print(f"그물 항목 만들기(가져올 때) {time.perf_counter() - t:.1f} s")
     es = pkg["walkMeshes"]
-    raw = json.dumps(es, ensure_ascii=False, separators=(",", ":")).encode("utf8")
+    raw = json.dumps([es, pkg.get("walkMeshClasses")], ensure_ascii=False, separators=(",", ":")).encode("utf8")
     print(
         f"walkMeshes {len(es)}개(면 {sum(e['kind'] == 'surface' for e in es)}, 길 띠 {sum(e['kind'] == 'band' for e in es)}), "
         f"{len(raw) / 1024:.0f} KB (gzip {len(gzip.compress(raw)) / 1024:.0f} KB); "

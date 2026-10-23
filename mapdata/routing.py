@@ -223,7 +223,7 @@ class MapIndex:
         if self._mesh is None and self.pkg.get("walkMeshes"):
             from mapdata.walkmesh import MeshRouter
 
-            self._mesh = MeshRouter(self, self.pkg["walkMeshes"])
+            self._mesh = MeshRouter(self, self.pkg["walkMeshes"], self.pkg.get("walkMeshClasses", []))
         return self._mesh
 
     def _indicators(self, e: dict, nodes: dict) -> dict:
