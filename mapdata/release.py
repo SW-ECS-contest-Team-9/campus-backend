@@ -180,6 +180,10 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                 "INSERT INTO walk_surface_node (surface_id, node_id) VALUES (%s, %s)",
                 [(sid[w["surfaceKey"]], nid[w["nodeKey"]]) for w in content.get("walkSurfaceNodes", [])],
             )
+            cur.executemany(
+                "INSERT INTO walk_mesh (release_id, seq, key, entry) VALUES (%s, %s, %s, %s)",
+                [(rid, i, m["key"], Jsonb(m)) for i, m in enumerate(content.get("walkMeshes", []))],
+            )
     return rid
 
 
@@ -327,6 +331,8 @@ def build_package(conn, rid: int) -> dict:
             ),
             key=lambda w: (w["surfaceKey"], w["nodeKey"]),
         ),
+        # 보행 그물(걷는 면·길 띠를 칸 4등분 세모로 덮은 격자). 앱이 같은 그물을 다시 만들어 길을 찾는다. 선택 칸.
+        "walkMeshes": [r["entry"] for r in q("SELECT entry FROM walk_mesh WHERE release_id = %s ORDER BY seq")],
         # 경로 방식별 비용 규칙(앱이 기기 안에서 같은 규칙으로 길을 찾도록). 선택 칸.
         "routeModes": MODE_SPEC,
     }
@@ -339,7 +345,7 @@ def validate(pkg: dict) -> dict:
     nodes = {n["key"]: n for n in pkg["nodes"]}
     floors = {f["key"]: f for f in pkg["floors"]}
     builds = {b["key"] for b in pkg["buildings"]}
-    for name in ("buildings", "floors", "nodes", "edges", "places", "walkAreas", "walkSurfaces"):
+    for name in ("buildings", "floors", "nodes", "edges", "places", "walkAreas", "walkSurfaces", "walkMeshes"):
         keys = [x["key"] for x in pkg.get(name, [])]
         if len(keys) != len(set(keys)):
             errors.append(f"{name}: key 중복")

@@ -295,3 +295,57 @@ def test_point_on_dead_end_piece_falls_back_to_nearest_node():
         and out is not None
         and math.isclose(out["distanceM"], math.hypot(6, 6), abs_tol=0.01)
     )
+
+
+# ---------- 가져오기·꾸러미·API ----------
+
+
+def test_transform_makes_meshes_and_package_round_trips(clean):
+    from test_surfaces import _src
+
+    from mapdata import release, transform
+
+    c, rep = transform.build(_src())
+    assert rep["walkMeshes"]["surfaces"] == 1
+    keys = [m["key"] for m in c["walkMeshes"]]
+    assert keys[0] == "m:s:P1" and all(k.startswith("m:r:") for k in keys[1:])
+    rid = release.create_draft(clean, c, rep, {"label": "mesh"})
+    clean.commit()
+    pkg = release.build_package(clean, rid)
+    assert pkg["walkMeshes"] == c["walkMeshes"]
+    assert release.validate(pkg)["errors"] == []
+    out, _ = MapIndex(pkg).route_points("n:a", "n:c", "shortest")
+    assert out is not None and out["edgeKeys"][0].startswith("w:")
+
+
+def test_api_routes_over_mesh_for_all_modes(clean):
+    from fastapi.testclient import TestClient
+    from test_surfaces import _src
+
+    import main
+    from mapdata import release, transform
+
+    c, rep = transform.build(_src())
+    rid = release.create_draft(clean, c, rep, {"label": "mesh"})
+    clean.commit()
+    release.publish(clean, rid)
+    clean.commit()
+    client = TestClient(main.app)
+    for mode in MODES:
+        r = client.get("/v1/routes", params={"from": "3,12,100.3", "to": "17,16,101.7", "mode": mode})
+        assert r.status_code in (200, 404), mode
+        if r.status_code == 200:
+            body = r.json()
+            assert body["from"]["attached"] == "surface" and body["from"]["areas"] == ["m:s:P1"]
+            assert body["mode"] == mode and body["steps"][0]["kind"] == "open_area"
+    body = client.get("/v1/routes", params={"from": "3,12,100.3", "to": "17,16,101.7"}).json()
+    assert straight(body["geometry"]) and math.isclose(body["distanceM"], math.hypot(14, 4) * 1.0, rel_tol=0.01)
+
+
+def test_one_way_road_gets_no_band():
+    n = {"a": node("a", 0, 0), "b": node("b", 40, 0)}
+    e = edge("ab", "a", "b", n)
+    e["direction"] = "forward"
+    p = pkg(n, [e])
+    e["indicators"] = MapIndex(p).ind["ab"]
+    assert walkmesh.build_entries(p) == []

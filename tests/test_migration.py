@@ -17,6 +17,7 @@ TABLES = {
     "walk_area_node",
     "walk_surface",
     "walk_surface_node",
+    "walk_mesh",
 }
 
 

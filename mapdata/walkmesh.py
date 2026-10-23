@@ -488,6 +488,7 @@ def _bands(content: dict, planes: list[dict]) -> list[dict]:
         if (
             e["kind"] not in BAND_KINDS
             or e["pedestrianAccess"] == "prohibited"
+            or e.get("direction", "both") != "both"  # 한 방향 길은 띠로 덮지 않는다(거꾸로 못 가게)
             or any(nodes[k]["location"] != "outdoor" for k in (e["from"], e["to"]))
             or not e.get("indicators")
         ):

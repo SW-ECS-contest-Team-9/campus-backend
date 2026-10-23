@@ -7,7 +7,7 @@ import math
 import re
 from collections import Counter, defaultdict
 
-from mapdata import indicators, surfaces
+from mapdata import indicators, surfaces, walkmesh
 
 FLOOR_TOL_M = 1.5  # 높이로 층을 정할 때 허용 차
 PLACE_DZ_M = 2.0  # 장소-노드 높이 차 한도
@@ -473,6 +473,13 @@ def build(src: dict) -> tuple[dict, dict]:
     rep["surfaces"] = surf_rep
     rep["indicators"] = indicators.annotate(content, structs)
     rep["indicators"]["structureFiles"] = structs.get("files") if structs else None
+    # 보행 그물: 걷는 면·열린 면 + 면 밖 바깥 길 띠(길 지표가 붙은 뒤에)
+    content["walkMeshes"] = walkmesh.build_entries(content, structs)
+    rep["walkMeshes"] = {
+        "surfaces": sum(m["kind"] == "surface" for m in content["walkMeshes"]),
+        "bands": sum(m["kind"] == "band" for m in content["walkMeshes"]),
+        "cells": {str(c): sum(m["cell"] == c for m in content["walkMeshes"]) for c in (2.0, 1.0, 0.5)},
+    }
     rep["counts"] = {k: len(v) for k, v in content.items()}
     rep["fixed"] = dict(rep["fixed"])
     rep["unfixed"] = dict(rep["unfixed"])
