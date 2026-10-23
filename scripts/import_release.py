@@ -5,7 +5,7 @@
   uv run python scripts/import_release.py --export C:/Users/ssant/campus-mobility-20261012c.sql
   uv run python scripts/import_release.py --publish-id 3
   지표에 구조물(계단 단·차양·기단·가로등)을 쓰려면 --structures C:/campus-tracker/frontend/public/structures
-  기단 면 가로지르기(기울어진 면 포함)는 --structures 와 --walkable data/walkable/walkable-areas-5186.geojson
+  기단 면 가로지르기(기울어진 면 포함)는 --structures 와 --walkable mapdata/data/walkable-areas-5186.geojson
   둘 다 안 주면 기본 경로(DEFAULT_STRUCTURES, DEFAULT_WALKABLE)가 있을 때 그것을 쓴다(공개할 때 걷는 면이 빠지지 않게).
 """
 
@@ -21,7 +21,7 @@ from mapdata import indicators, release, sources, surfaces, transform  # noqa: E
 
 ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_STRUCTURES = Path("C:/campus-tracker-testdb/frontend/public/structures")  # 시험용 트래커 체크아웃
-DEFAULT_WALKABLE = ROOT / "data" / "walkable" / "walkable-areas-5186.geojson"
+DEFAULT_WALKABLE = ROOT / "mapdata" / "data" / "walkable-areas-5186.geojson"  # 저장소에 있음(WALK02 뒤 판)
 
 
 def with_defaults(structures, walkable, log=print):

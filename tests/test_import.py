@@ -204,3 +204,10 @@ def test_import_release_uses_default_surface_paths_when_they_exist(tmp_path, mon
     logs.clear()
     assert mod.with_defaults("S", None, logs.append) == ("S", None)
     assert len(logs) == 1 and "걷는 면 없이" in logs[0]
+
+
+def test_default_walkable_outline_is_in_repo():
+    # 배포 이미지·서버 체크아웃에 외곽이 있어야 걷는 면이 빠지지 않는다(git 밖 data/ 에 두지 않음)
+    mod = _import_release_module()
+    assert mod.DEFAULT_WALKABLE.is_file()
+    assert "data" not in mod.DEFAULT_WALKABLE.relative_to(mod.ROOT).parts[:1]
