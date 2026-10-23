@@ -341,7 +341,7 @@ class MeshRouter:
                     k += 1
         return out
 
-    def factor(self, pi: int, mode: str) -> float:
+    def factor(self, pi: int, mode: str) -> float | None:
         """면의 길이 1 m 비용(방식별). 열린 면 가상 간선과 같은 규칙을 1 m 짜리 가상 간선으로 잰다(오르내림은 평균)."""
         ck = (pi, mode)
         if ck not in self._factor_cache:
@@ -367,8 +367,9 @@ class MeshRouter:
             else:
                 e = self.idx._area_edge(src, a, b)
             view = self.idx._with({"q:a": a, "q:b": b}, [e])
-            c = (view._cost(e, mode, False, True) + view._cost(e, mode, True, True)) / 2
-            self._factor_cache[ck] = c / max(e["lengthM"], 1e-6)
+            cs = [view._cost(e, mode, False, True), view._cost(e, mode, True, True)]
+            # 이 방식에서 못 지나는 면(휠체어: 너무 가파름 등)은 None
+            self._factor_cache[ck] = None if None in cs else sum(cs) / 2 / max(e["lengthM"], 1e-6)
         return self._factor_cache[ck]
 
     def _xyz(self, s, tmp):
@@ -409,6 +410,7 @@ class MeshRouter:
         if res is None:
             return None
         states, steps = res
+        self.mode = mode
         out = self._describe(states, steps, tmp)
         out["mode"] = mode
         out["timeMs"] = round((time.perf_counter() - t0) * 1000, 1)
@@ -419,10 +421,13 @@ class MeshRouter:
         if isinstance(u, tuple):
             pi, v = u
             f = self.factor(pi, mode)
+            if f is None:
+                return
             for w, d in self.planes[pi].adj[v]:
                 yield (pi, w), d * f, ("mesh", pi)
             for b, d in self.links.get(u, []):
-                yield b, d * f, ("link", None)
+                if self.factor(b[0], mode) is not None:
+                    yield b, d * f, ("link", pi)
         else:
             if u in self.idx.out and u not in tmp:
                 for e, v in self.idx.out[u]:
@@ -433,7 +438,9 @@ class MeshRouter:
                     yield v, e, ("edge", e)
         for b, d in [*self.attach.get(u, []), *extra.get(u, [])]:
             pi = b[0] if isinstance(b, tuple) else u[0]
-            yield b, d * self.factor(pi, mode), ("attach", pi)
+            f = self.factor(pi, mode)
+            if f is not None:
+                yield b, d * f, ("attach", pi)
 
     @staticmethod
     def _area_of(e: dict) -> str | None:
@@ -505,23 +512,19 @@ class MeshRouter:
                 edge_keys.append(e["key"])
                 i += 1
                 continue
-            if kind == "link":
-                a, b = self._xyz(states[i], tmp), self._xyz(states[i + 1], tmp)
-                geometry.extend([list(a), list(b)] if not geometry else [list(b)])
-                i += 1
-                continue
-            pi = val
+            # 그물 구간: 이음 간선으로 넘어가는 같은 높이 면까지, 비용(1 m 당)이 같은 면이면 한 구간으로 당겨 편다
+            f0 = self.factor(val, self.mode)
             j = i
-            while j < len(steps) and steps[j][0] in ("mesh", "attach") and steps[j][1] == pi:
+            while j < len(steps) and steps[j][0] != "edge" and self.factor(steps[j][1], self.mode) == f0:
                 j += 1
+            run = _Run([self.planes[k] for k in sorted({steps[m][1] for m in range(i, j)})])
             pts = [self._xyz(s, tmp) for s in states[i : j + 1]]
             raw += len(pts)
-            pulled = _pull(self.planes[pi], pts)
-            P = self.planes[pi]
+            pulled = _pull(run, pts)
             for a, b in zip(pulled, pulled[1:]):
-                seg = P.line(a, b)
+                seg = run.line(a, b)
                 geometry.extend(seg if not geometry else seg[1:])
-            i = j
+            i = max(j, i + 1)
         geometry = [[round(c, 2) for c in p] for p in geometry]
         return {
             "distanceM": round(sum(math.dist(a, b) for a, b in zip(geometry, geometry[1:])), 2),
@@ -533,13 +536,63 @@ class MeshRouter:
         }
 
 
-def _pull(P: Plane, pts: list) -> list:
+class _Run:
+    """한 구간에 이어 쓰는 면들(같은 높이로 이어진 면, 하나일 때가 많음). 줄 당기기용 보기·높이."""
+
+    SAMPLE_M = 0.5  # 직선이 면을 넘어갈 때 높이 끊김을 이 간격으로 본다
+
+    def __init__(self, planes: list[Plane]):
+        self.planes = planes
+        self.region = planes[0].region if len(planes) == 1 else unary_union([P.region for P in planes])
+        shapely.prepare(self.region)
+
+    def _z(self, x, y, prev):
+        """(x, y) 를 덮는 면 가운데 높이가 prev 에 가장 가까운 면의 높이(덮는 면이 없으면 None)."""
+        best = None
+        for P in self.planes:
+            if len(self.planes) == 1 or P.region.covers(Point(x, y)):
+                z = P.z(x, y)
+                if best is None or abs(z - prev) < abs(best - prev):
+                    best = z
+        return best
+
+    def sees(self, p, q) -> bool:
+        if math.dist(p[:2], q[:2]) > 1e-9 and not self.region.covers(LineString([p[:2], q[:2]])):
+            return False
+        if len(self.planes) == 1:
+            return True
+        k = max(1, math.ceil(math.dist(p[:2], q[:2]) / self.SAMPLE_M))
+        prev = p[2]
+        for s in range(1, k + 1):
+            t = s / k
+            z = self._z(p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1]), prev)
+            if z is None or abs(z - prev) > STEP_OK_M + 0.5 * self.SAMPLE_M:  # 턱 0.2 m + 50 % 기울기까지
+                return False
+            prev = z
+        return True
+
+    def line(self, p, q) -> list:
+        """p → q 직선을 SURFACE_SAMPLE_M 마다 면 높이로 찍은 3D 선(두 끝은 주어진 높이)."""
+        h = math.dist(p[:2], q[:2])
+        k = max(1, math.ceil(h / SURFACE_SAMPLE_M))
+        pts, prev = [list(p)], p[2]
+        for s in range(1, k):
+            t = s / k
+            x, y = p[0] + t * (q[0] - p[0]), p[1] + t * (q[1] - p[1])
+            z = self._z(x, y, prev)
+            prev = prev if z is None else z
+            pts.append([x, y, prev])
+        pts.append(list(q))
+        return pts
+
+
+def _pull(run: _Run, pts: list) -> list:
     """줄 당기기: 앞 점에서 면 안 직선으로 보이는 가장 먼 점으로 건너뛴다."""
     out = [pts[0]]
     i = 0
     while i < len(pts) - 1:
         j = len(pts) - 1
-        while j > i + 1 and not P.sees(pts[i], pts[j]):
+        while j > i + 1 and not run.sees(pts[i], pts[j]):
             j -= 1
         out.append(pts[j])
         i = j

@@ -105,3 +105,18 @@ def test_package_node_attaches_and_graph_edges_still_work():
     out = r.route_points("o", (19.0, 19.0, 100.0))
     assert out is not None and out["edgeKeys"] == ["oa"]
     assert math.isclose(out["distanceM"], 10 + math.hypot(19, 9), abs_tol=0.01)
+
+
+def test_line_stays_straight_across_same_height_seam():
+    a = surface("s:a", [[[[0, 0], [10, 0], [10, 10], [0, 10]]]], {"z": 100.0})
+    b = surface("s:b", [[[[10, 0], [20, 0], [20, 10], [10, 10]]]], {"z": 100.1})
+    out = router([a, b]).route_points((1.0, 1.0, 100.0), (19.0, 8.0, 100.1))
+    assert out is not None and straight(out["geometry"])
+    assert math.isclose(out["distanceM"], math.hypot(18, 7), abs_tol=0.02)
+
+
+def test_mode_that_excludes_steep_plane_finds_no_route_instead_of_failing():
+    steep = {"profile": {"origin": [0, 0], "direction": [1, 0], "points": [[0, 100.0], [20, 104.0]]}}  # 20 %
+    r = router([surface("s:1", [[SQ]], steep)])
+    assert r.route_points((1.0, 10.0, 100.2), (19.0, 10.0, 103.8), "accessible") is None
+    assert r.route_points((1.0, 10.0, 100.2), (19.0, 10.0, 103.8), "shortest") is not None
