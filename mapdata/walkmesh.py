@@ -556,7 +556,6 @@ class Mesh:
         self.classes = entry["classes"]
         nm = len(MODES)
         self.cf = [[c["f"][m] for c in self.classes] for m in range(nm)]  # 방식 → 등급 → ppm|None
-        self.sig = [tuple(c["f"]) for c in self.classes]
         self.top = entry.get("top")
         self.line = edges[entry["edge"]]["geometry"] if entry.get("edge") else None
         nc = (cols + 1) * (rows + 1)
@@ -1236,7 +1235,7 @@ class MeshRouter:
                 edges.append(e)
                 nodes_seq.append(e["to"] if e["from"] == it[2] else e["from"])
                 continue
-            for ve in self._virtual_edges(it[1], tmp, key_of, len(edges)):
+            for ve in self._virtual_edges(it[1], tmp, key_of, len(edges), mode_i):
                 for k, p in ((ve["from"], ve["geometry"][0]), (ve["to"], ve["geometry"][-1])):
                     if k not in self.idx.nodes:
                         tmp_nodes[k] = {
@@ -1257,15 +1256,16 @@ class MeshRouter:
         out["cost"] = round(found["cost"] / 1000, 3)
         return out
 
-    def _virtual_edges(self, refs: list, tmp: dict, key_of, base: int) -> list[dict]:
+    def _virtual_edges(self, refs: list, tmp: dict, key_of, base: int, mode_i: int) -> list[dict]:
         pts = [self._point(r, tmp) for r in refs]
         mesh_ids = []
         for r in refs:
             if r[0] == "v" and r[1] not in mesh_ids:
                 mesh_ids.append(r[1])
-        run = _Run([self.meshes[i] for i in mesh_ids])
-        keep = _pull(run, pts)
-        # 조각마다 (그물, 등급), 같은 것끼리 한 가상 길
+        run = _Run([self.meshes[i] for i in mesh_ids], mode_i)
+        own = [mesh_ids.index(r[1]) if r[0] == "v" else None for r in refs]  # 점마다 제 그물 자리(노드·점은 None)
+        keep = _pull(run, pts, own)
+        # 조각마다 (그물, 이 방식의 1 m 비용), 같은 것끼리 한 가상 길
         segs = []
         for a, b in zip(keep, keep[1:]):
             segs.append((a, b, run.label(pts[a], pts[b])))
@@ -1275,8 +1275,7 @@ class MeshRouter:
             j = k
             while j + 1 < len(segs) and segs[j + 1][2] == segs[k][2]:
                 j += 1
-            mpos, ci = segs[k][2]
-            M = run.meshes[mpos]
+            M = run.meshes[segs[k][2][0]]
             geom = []
             for a, b, _ in segs[k : j + 1]:
                 line = run.line(pts[a], pts[b])
@@ -1286,7 +1285,7 @@ class MeshRouter:
             for p, q in zip(geom, geom[1:]):
                 dx, dy, dz = q[0] - p[0], q[1] - p[1], q[2] - p[2]
                 length += math.sqrt(dx * dx + dy * dy + dz * dz)
-            cl = M.classes[ci]
+            cls = [c for a, b, _ in segs[k : j + 1] for c in run.classes(pts[a], pts[b])]
             e = {
                 "key": f"w:{base + len(out)}:{M.key}",
                 "from": key_of(refs[segs[k][0]]),
@@ -1306,11 +1305,24 @@ class MeshRouter:
             if M.kind == "surface":
                 e["areaKind"] = M.entry.get("areaKind") or "surface"
             i = ind_mod.basic_indicators(e, False)
-            i.update(coveredRatio=cl.get("coveredRatio"), litRatio=cl.get("litRatio"), vehicle=cl.get("vehicle"))
+            i.update(_class_indicators(cls))
             e["indicators"] = i
             out.append(e)
             k = j + 1
         return out
+
+
+def _class_indicators(cls: list[dict]) -> dict:
+    """가상 길 위 표본 칸 등급들 → 지붕·조명 비율(모르는 칸은 0 으로 셈, 다 모르면 None)·차량(절반 넘으면 shared)."""
+    out = {}
+    for f in ("coveredRatio", "litRatio"):
+        vals = [c.get(f) for c in cls]
+        out[f] = None if all(v is None for v in vals) else round(sum(v or 0.0 for v in vals) / len(vals), 2)
+    shared = sum(1 for c in cls if c.get("vehicle") == "shared")
+    out["vehicle"] = (
+        "shared" if cls and shared * 2 >= len(cls) else (cls[0].get("vehicle") if cls and shared == 0 else "none")
+    )
+    return out
 
 
 def _area_of(e: dict) -> str | None:
@@ -1330,11 +1342,13 @@ def _best(dist: dict, seeds: list[tuple[int, int]]):
 class _Run:
     """한 점 줄에 이어 쓰는 그물들(같은 높이로 이어진 그물). 줄 당기기용 보기·높이·등급."""
 
-    def __init__(self, meshes: list[Mesh]):
+    def __init__(self, meshes: list[Mesh], mode_i: int = 0):
         self.meshes = meshes
+        self.mode_i = mode_i
         self.step = min((M.cell for M in meshes), default=1.0) * LOS_STEP
+        self.cell_max = max((M.cell for M in meshes), default=1.0)
 
-    def _at(self, x, y, prev_m, prev_z):
+    def _at(self, x, y, prev_m, prev_z, gap=0):
         """(x, y) 를 덮는 쓸 수 있는 세모의 (그물 자리, 칸): 앞 표본 그물 먼저, 아니면 높이가 이어지는 첫 그물."""
         if prev_m is not None:
             k = self.meshes[prev_m].usable(x, y)
@@ -1344,32 +1358,70 @@ class _Run:
             if p == prev_m:
                 continue
             k = M.usable(x, y)
-            if k is not None and (prev_z is None or abs(M.z(x, y) - prev_z) <= STEP_OK_M + self.step):
+            if k is not None and (prev_z is None or abs(M.z(x, y) - prev_z) <= STEP_OK_M + self.step * (gap + 1)):
                 return p, k
         return None
 
-    def sees(self, p, q) -> bool:
-        """p → q 직선이 그물들의 쓸 수 있는 세모만, 같은 비용 등급(방식별 계수가 같은)으로 지나는가."""
+    def sees(self, p, q, pm0=None, qm0=None) -> bool:
+        """p → q 직선이 그물들의 쓸 수 있는 세모만, 이 방식에서 1 m 비용이 같은 칸으로만 지나는가.
+        pm0·qm0 = 두 끝의 제 그물 자리(노드·점이면 None). 그물이 바뀌는 곳(이음)·그물 밖 끝의 틈은 칸 하나 길이까지
+        건넌다. 한 그물 안 구멍(틈 앞뒤가 같은 그물)은 못 건넌다."""
         dx, dy = q[0] - p[0], q[1] - p[1]
         n = max(1, math.ceil(math.sqrt(dx * dx + dy * dy) / self.step))
-        sig, pm, pz = None, None, None
+        sig, first = None, True  # sig = 첫 표본 칸의 1 m 비용
+        pm, pz, gap, seam = pm0, (p[2] if pm0 is not None else None), 0, False  # gap = 이어진 틈 표본 수
+        for s in range(n):
+            t = (s + 0.5) / n
+            x, y = p[0] + t * dx, p[1] + t * dy
+            got = self._at(x, y, pm, pz, gap)
+            if got is None:
+                if self._seamy(x, y):  # 두 그물 칸이 겹친 이음 틈: 그물 안 구멍이 아님
+                    seam = True
+                    continue
+                gap += 1
+                if gap * self.step > self.cell_max:
+                    return False
+                continue
+            M = self.meshes[got[0]]
+            if gap and pm is not None and got[0] == pm and not seam:
+                return False
+            seam = False
+            g = M.cf[self.mode_i][M.cls[got[1]]]
+            if first:
+                sig, first = g, False
+            elif g != sig:
+                return False
+            pm, pz, gap = got[0], M.z(x, y), 0
+        return not first and not (gap and qm0 is not None and qm0 == pm)
+
+    def _seamy(self, x, y) -> bool:
+        """(x, y) 가 둘 이상 그물의 빈 칸이 아닌 칸(쓰는 세모가 있는 칸) 안인가."""
+        n = 0
+        for M in self.meshes:
+            t = M.locate(x, y)
+            if t is not None and M.codes[t[0]]:
+                n += 1
+                if n >= 2:
+                    return True
+        return False
+
+    def classes(self, p, q) -> list[dict]:
+        """p → q 표본 점마다 든 칸의 등급(그물 밖 표본은 뺌)."""
+        dx, dy = q[0] - p[0], q[1] - p[1]
+        n = max(1, math.ceil(math.sqrt(dx * dx + dy * dy) / self.step))
+        out, pm, pz = [], None, None
         for s in range(n):
             t = (s + 0.5) / n
             x, y = p[0] + t * dx, p[1] + t * dy
             got = self._at(x, y, pm, pz)
-            if got is None:
-                return False
-            M = self.meshes[got[0]]
-            g = M.sig[M.cls[got[1]]]
-            if sig is None:
-                sig = g
-            elif g != sig:
-                return False
-            pm, pz = got[0], M.z(x, y)
-        return True
+            if got is not None:
+                M = self.meshes[got[0]]
+                out.append(M.classes[M.cls[got[1]]])
+                pm, pz = got[0], M.z(x, y)
+        return out
 
-    def label(self, p, q) -> tuple[int, int]:
-        """조각의 (그물 자리, 등급): 가운데 점(없으면 앞에서부터 표본)이 든 세모."""
+    def label(self, p, q) -> tuple:
+        """조각의 (그물 자리, 이 방식의 1 m 비용): 가운데 점(없으면 앞에서부터 표본)이 든 세모."""
         dx, dy = q[0] - p[0], q[1] - p[1]
         n = max(1, math.ceil(math.sqrt(dx * dx + dy * dy) / self.step))
         order = [n // 2] + [s for s in range(n) if s != n // 2]
@@ -1377,8 +1429,9 @@ class _Run:
             t = (s + 0.5) / n
             got = self._at(p[0] + t * dx, p[1] + t * dy, None, None)
             if got is not None:
-                return got[0], self.meshes[got[0]].cls[got[1]]
-        return 0, self.meshes[0].cls[0] if self.meshes else 0
+                M = self.meshes[got[0]]
+                return got[0], M.cf[self.mode_i][M.cls[got[1]]]
+        return 0, None
 
     def z(self, x, y, prev) -> float:
         best = None
@@ -1403,15 +1456,19 @@ class _Run:
         return pts
 
 
-def _pull(run: _Run, pts: list) -> list[int]:
-    """줄 당기기: 앞 점에서 직선으로 보이는 먼 점으로 건너뛴다(2배씩 늘려 보고 사이는 반씩 좁힘). 남길 점 번호."""
+def _pull(run: _Run, pts: list, own: list) -> list[int]:
+    """줄 당기기: 앞 점에서 끝이 보이면 끝으로, 아니면 직선으로 보이는 먼 점으로 건너뛴다(2배씩 늘려 보고 사이는 반씩
+    좁힘). 남길 점 번호."""
     keep = [0]
     i, last = 0, len(pts) - 1
     while i < last:
+        if run.sees(pts[i], pts[last], own[i], own[last]):  # 끝이 바로 보이면 끝으로
+            keep.append(last)
+            break
         ok, step, fail = i + 1, 1, None
         while True:
             j = min(i + 2 * step, last)
-            if run.sees(pts[i], pts[j]):
+            if run.sees(pts[i], pts[j], own[i], own[j]):
                 ok = j
                 if j == last:
                     break
@@ -1423,7 +1480,7 @@ def _pull(run: _Run, pts: list) -> list[int]:
             lo, hi = ok, fail
             while hi - lo > 1:
                 mid = (lo + hi) // 2
-                if run.sees(pts[i], pts[mid]):
+                if run.sees(pts[i], pts[mid], own[i], own[mid]):
                     lo = mid
                 else:
                     hi = mid

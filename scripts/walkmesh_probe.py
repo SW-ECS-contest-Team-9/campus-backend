@@ -42,8 +42,12 @@ def main(path, structures=None):
         f"칸 크기별 {dict(sorted({c: sum(e['cell'] == c for e in es) for c in {e['cell'] for e in es}}.items()))}"
     )
     idx = MapIndex(pkg)
+    import gc
+
     t = time.perf_counter()
     r = idx.mesh
+    gc.collect()
+    gc.freeze()
     print(
         f"그물 색인 {time.perf_counter() - t:.2f} s: 꼭짓점 {sum(sum(1 for a in M.adj if a) for M in r.meshes)}, "
         f"간선 {sum(len(M.ea) for M in r.meshes)}, 이음 {len(r.links)}(대표 {len(r.seam_links)}), "

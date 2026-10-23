@@ -243,7 +243,12 @@ def test_rain_mode_keeps_to_covered_cells_and_line_does_not_cross_classes():
     assert rain["summary"]["rainExposedM"] == 0.0
     a2, b2 = (2.0, 1.0, 100.0), (30.0, 19.0, 100.0)
     out = go(r, a2, b2, "shortest")
-    assert out is not None and len(out["edgeKeys"]) == 2  # 지붕 칸 → 맨 칸에서 나뉨
+    assert (
+        out is not None and len(out["edgeKeys"]) == 1 and straight(out["geometry"])
+    )  # 최단은 지붕 칸·맨 칸 비용이 같다
+    assert 0.2 < out["summary"]["rainExposedM"] / out["distanceM"] < 0.8 or out["summary"]["rainExposedM"] > 0
+    out = go(r, a2, b2, "rainProtected")
+    assert out is not None and len(out["edgeKeys"]) == 2  # 비 안 맞는 길: 지붕 칸 → 맨 칸에서 나뉨
     mid = out["geometry"][[p[:2] for p in out["geometry"]].index(next(p[:2] for p in out["geometry"] if p[0] >= 9.99))]
     assert math.isclose(mid[0], 10.0, abs_tol=0.01)
 
@@ -349,3 +354,18 @@ def test_one_way_road_gets_no_band():
     p = pkg(n, [e])
     e["indicators"] = MapIndex(p).ind["ab"]
     assert walkmesh.build_entries(p) == []
+
+
+def test_line_crosses_seam_gap_between_misaligned_grids():
+    """격자 방향이 다른 두 면이 맞닿은 이음의 틈(어느 세모에도 안 드는 얇은 틈)은 건넌다."""
+    a = surface("s:a", [[[[0, 0], [10, 0], [10, 10], [0, 10]]]], {"z": 100.0})
+    b = surface("s:b", [[[[10, 0], [20, 1.5], [19, 11.5], [10, 10]]]], {"z": 100.05})
+    out = go(router([a, b]), (1.0, 5.0, 100.0), (18.0, 6.0, 100.05))
+    assert out is not None and straight(out["geometry"])
+
+
+def test_line_does_not_jump_hole_inside_one_mesh():
+    hole = [[9.6, 0.5], [10.4, 0.5], [10.4, 19.5], [9.6, 19.5]]  # 0.8 m 폭 벽(한 그물 안 구멍)
+    r = router([surface("s:1", [[SQ, hole]], {"z": 100.0})])
+    out = go(r, (5.0, 10.0, 100.0), (15.0, 10.0, 100.0))
+    assert out is not None and out["distanceM"] > 18
