@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+.vscode
+.pytest_cache
+.ruff_cache
+**/__pycache__
+**/*.py[cod]
+.env
+.env.*
+data
+deploy
+docs
+tests
+compose.yaml
+Dockerfile
