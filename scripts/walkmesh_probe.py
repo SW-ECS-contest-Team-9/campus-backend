@@ -63,10 +63,10 @@ def main(path, structures=None):
     for _ in range(150):
         a, b = rnd.sample(nodes, 2)
         pairs.append((a["key"], b["key"]))
-    # 면 위 아무 점(그물 세모 가운데) 쌍
+    # 면·실내 바닥 위 아무 점(그물 세모 가운데) 쌍
     cents = []
     for mi, M in enumerate(r.meshes):
-        if M.kind != "surface":
+        if M.kind not in ("surface", "floor"):  # 걷는 면·실내 바닥
             continue
         for k in range(0, len(M.codes), 7):
             if M.codes[k] == 15:
