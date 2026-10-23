@@ -6,12 +6,14 @@ import re
 from collections import defaultdict
 
 from mapdata.indicators import ELEVATOR_WAIT_S, basic_indicators
+from mapdata.surfaces import surface_z
 
 ATTACH_RADIUS_M = 25.0
 ATTACH_DZ_M = 2.0
 # 열린 면(광장·운동장 등) 가로지르기: 면 위 노드끼리 면 안에 머무는 직선으로 잇는다(꾸러미에는 없고 읽을 때 만든다).
 AREA_DZ_M = 0.5  # 면 높이와 노드 높이 차 한도. 넘으면 다른 단이라 잇지 않는다(단 사이는 벽).
 AREA_MAX_NEIGHBORS = 12  # 노드마다 가까운 이웃 몇 개까지만(면 노드가 많아도 간선 수가 n² 로 늘지 않게)
+SURFACE_SAMPLE_M = 2.0  # 기단 면 가로지르기 선은 이만큼마다 면 높이를 찍는다(기울기·걷는 시간용)
 OPEN_AREA_FACTOR = 1.02  # 같은 길이면 그려 둔 길(실측 선)을 고르게 하는 작은 덤
 VEHICLE_ROAD_FACTOR = 1.5  # 보행 허용이 아닌 차도
 VEHICLE_ROAD_WALK_FACTOR = 1.1  # 보행 허용 차도(보차 혼용): 비슷한 길이면 인도를 고르게 하는 작은 덤
@@ -115,12 +117,17 @@ class _Ring:
                 inside = not inside
         return inside
 
-    def sees(self, p, q) -> bool:
-        """선분 pq 가 통째로 면 안(경계 포함)에 있는가: 경계와 만나는 곳마다 자르고 조각 가운데를 본다."""
-        length = math.dist(p, q)
-        if length < 1e-9:
-            return True
-        cuts = [0.0, 1.0]
+    def on_edge(self, p) -> bool:
+        for a, b in self.edges:
+            dx, dy = b[0] - a[0], b[1] - a[1]
+            t = max(0.0, min(1.0, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / (dx * dx + dy * dy or 1.0)))
+            if math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy) < 1e-6:
+                return True
+        return False
+
+    def cuts(self, p, q, length: float) -> list[float]:
+        """선분 pq 가 이 고리의 변과 만나는 곳(pq 위 비율 t)."""
+        cuts = []
         for a, b in self.edges:
             d1, d2 = _cross(p, q, a), _cross(p, q, b)
             on1, on2 = abs(d1) < 1e-7 * length, abs(d2) < 1e-7 * length
@@ -131,7 +138,43 @@ class _Ring:
                 den = _cross(a, b, p) - _cross(a, b, q)
                 if den:
                     cuts.append(_cross(a, b, p) / den)
+        return cuts
+
+    def sees(self, p, q) -> bool:
+        """선분 pq 가 통째로 면 안(경계 포함)에 있는가: 경계와 만나는 곳마다 자르고 조각 가운데를 본다."""
+        length = math.dist(p, q)
+        if length < 1e-9:
+            return True
+        cuts = [0.0, 1.0, *self.cuts(p, q, length)]
         ts = sorted(t for t in cuts if 0.0 <= t <= 1.0)
+        for t0, t1 in zip(ts, ts[1:]):
+            if t1 - t0 < 1e-9:
+                continue
+            m = (t0 + t1) / 2
+            if not self.covers((p[0] + m * (q[0] - p[0]), p[1] + m * (q[1] - p[1]))):
+                return False
+        return True
+
+
+class _Region:
+    """구멍 있는 면 여러 조각([[바깥 고리, 구멍 고리...], ...]). 경계 위 점은 안으로 본다."""
+
+    def __init__(self, polygons: list):
+        self.parts = [(_Ring(p[0]), [_Ring(h) for h in p[1:]]) for p in polygons]
+        self.rings = [r for outer, holes in self.parts for r in [outer, *holes]]
+
+    def covers(self, p) -> bool:
+        for outer, holes in self.parts:
+            if outer.covers(p) and not any(h.covers(p) and not h.on_edge(p) for h in holes):
+                return True
+        return False
+
+    def sees(self, p, q) -> bool:
+        length = math.dist(p, q)
+        if length < 1e-9:
+            return self.covers(p)
+        ts = sorted(t for r in self.rings for t in r.cuts(p, q, length) if 0.0 <= t <= 1.0)
+        ts = [0.0, *ts, 1.0]
         for t0, t1 in zip(ts, ts[1:]):
             if t1 - t0 < 1e-9:
                 continue
@@ -162,6 +205,12 @@ class MapIndex:
             self.edges[e["key"]] = e
             self.out[e["from"]].append((e, e["to"]))
             self.out[e["to"]].append((e, e["from"]))
+        self.walk_surfaces = {s["key"]: s for s in pkg.get("walkSurfaces", [])}
+        joined = {frozenset((e["from"], e["to"])) for e in self.edges.values() if e["kind"] == "open_area"}
+        for e in self._surface_edges(pkg.get("walkSurfaceNodes", []), joined):
+            self.edges[e["key"]] = e
+            self.out[e["from"]].append((e, e["to"]))
+            self.out[e["to"]].append((e, e["from"]))
         # 지표: 꾸러미에 있으면 그대로, 없으면(옛 꾸러미·열린 면 가상 간선) 길 선으로 계산
         self.ind = {}
         for k, e in self.edges.items():
@@ -171,6 +220,10 @@ class MapIndex:
                 i = basic_indicators(e, indoor)
                 if e["kind"] == "open_area":
                     i["vehicle"] = "shared" if e.get("areaKind") == "parking_aisle" else "none"
+                    if e.get("surfaceKey"):  # 기단 면: 아스팔트이거나 빗금 차도·주차면이면 차와 같이 쓰는 곳
+                        sf = self.walk_surfaces[e["surfaceKey"]]
+                        if sf.get("material") == "asphalt" or any(w in (sf["name"] or "") for w in ("차도", "주차")):
+                            i["vehicle"] = "shared"
             self.ind[k] = i
 
     def _area_edges(self, area_nodes: list[dict]) -> list[dict]:
@@ -212,6 +265,60 @@ class MapIndex:
                         "stepCount": None,
                         "widthM": None,
                         "geometry": [[p["x"], p["y"], p["z"]], [q["x"], q["y"], q["z"]]],
+                        "estimated": True,
+                    }
+                )
+        return out
+
+    def _surface_edges(self, surface_nodes: list[dict], joined: set) -> list[dict]:
+        """기단 면마다 면 높이(±AREA_DZ_M) 노드끼리, 면(구멍 포함) 안에 머무는 직선이면 가상 간선(kind open_area).
+        선은 SURFACE_SAMPLE_M 마다 면 높이를 따라가고, 길이는 그 3D 길이. 열린 면이 이미 이은 쌍은 건너뛴다."""
+        members = defaultdict(list)
+        for w in surface_nodes:
+            s, n = self.walk_surfaces.get(w["surfaceKey"]), self.nodes.get(w["nodeKey"])
+            if (
+                s
+                and n
+                and n["location"] == "outdoor"
+                and abs(n["z"] - surface_z(s["top"], n["x"], n["y"])) <= AREA_DZ_M
+            ):
+                members[s["key"]].append(n)
+        out = []
+        for sk, ns in sorted(members.items()):
+            s, region = self.walk_surfaces[sk], _Region(self.walk_surfaces[sk]["polygons"])
+            ns = sorted(ns, key=lambda n: n["key"])
+            keep = set()
+            for i, n in enumerate(ns):
+                near = sorted((math.hypot(m["x"] - n["x"], m["y"] - n["y"]), j) for j, m in enumerate(ns) if j != i)
+                picked = 0
+                for _, j in near:
+                    if picked >= AREA_MAX_NEIGHBORS:
+                        break
+                    pair = (min(i, j), max(i, j))
+                    if pair in keep or region.sees((n["x"], n["y"]), (ns[j]["x"], ns[j]["y"])):
+                        keep.add(pair)
+                        picked += 1
+            for i, j in sorted(keep):
+                p, q = ns[i], ns[j]
+                if frozenset((p["key"], q["key"])) in joined:
+                    continue
+                g = _surface_line(s["top"], p, q)
+                out.append(
+                    {
+                        "key": f"y:{sk}:{p['key']}:{q['key']}",
+                        "from": p["key"],
+                        "to": q["key"],
+                        "name": s["name"] or None,
+                        "kind": "open_area",
+                        "areaKind": "surface",
+                        "surfaceKey": sk,
+                        "direction": "both",
+                        "pedestrianAccess": "allowed",
+                        "wheelchairAccess": "unknown",
+                        "lengthM": round(sum(math.dist(a, b) for a, b in zip(g, g[1:])), 2),
+                        "stepCount": None,
+                        "widthM": None,
+                        "geometry": g,
                         "estimated": True,
                     }
                 )
@@ -484,6 +591,19 @@ class MapIndex:
             _durationS=t["_durationS"],
         )
         return out
+
+
+def _surface_line(top: dict, p: dict, q: dict) -> list:
+    """p → q 직선을 SURFACE_SAMPLE_M 마다 면 높이로 찍은 3D 선. 두 끝은 노드 높이."""
+    h = math.hypot(q["x"] - p["x"], q["y"] - p["y"])
+    k = max(1, math.ceil(h / SURFACE_SAMPLE_M))
+    pts = [[p["x"], p["y"], p["z"]]]
+    for i in range(1, k):
+        t = i / k
+        x, y = p["x"] + t * (q["x"] - p["x"]), p["y"] + t * (q["y"] - p["y"])
+        pts.append([round(x, 2), round(y, 2), round(surface_z(top, x, y), 2)])
+    pts.append([q["x"], q["y"], q["z"]])
+    return pts
 
 
 def _where(lbl: dict) -> str:

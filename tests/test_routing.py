@@ -38,8 +38,10 @@ def edge(key, a, b, nodes, kind="walkway", access="allowed", name=None):
     }
 
 
-def pkg(nodes, edges, areas=(), area_nodes=()):
+def pkg(nodes, edges, areas=(), area_nodes=(), surfaces=None, surface_nodes=None):
+    extra = {} if surfaces is None else {"walkSurfaces": list(surfaces), "walkSurfaceNodes": list(surface_nodes or [])}
     return {
+        **extra,
         "nodes": list(nodes.values()),
         "edges": edges,
         "places": [],
