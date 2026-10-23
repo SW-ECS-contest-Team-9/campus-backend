@@ -1,135 +1,105 @@
-"""보행 그물 시제품 재기: 공개 꾸러미로 그물을 만들어 크기·경로 시간을 재고 지금 그래프 경로와 비교한다.
+"""보행 그물 재기: 공개 꾸러미로 그물(면 + 길 띠)을 만들어 크기·만들기 시간·경로 시간을 재고 지금 그래프 경로와 비교한다.
 
-uv run python scripts/walkmesh_probe.py data/releases/<꾸러미>.json
+uv run python scripts/walkmesh_probe.py data/releases/<꾸러미>.json [구조물 폴더]
+꾸러미에 walkMeshes 가 있으면 그것을 쓰고, 없으면 여기서 만든다(구조물 폴더를 주면 칸 지붕·조명 등급도).
 """
 
+import copy
 import gzip
 import json
 import math
 import random
+import statistics
 import sys
 import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from mapdata import walkmesh  # noqa: E402
-from mapdata.routing import MapIndex  # noqa: E402
-
-PROTO = {
-    "운동장": ["s:Z02-PLATFORM-APRON", "a:1"],
-    "회차 공간": ["s:Z05-PLATFORM-TURN-PLAZA", "a:2"],
-    "분수 광장": ["s:Z03-PLATFORM-PLAZA", "a:3"],
-}
+from mapdata import indicators, walkmesh  # noqa: E402
+from mapdata.routing import MODES, MapIndex  # noqa: E402
 
 
-def build(pkg, keys=None):
-    t = time.perf_counter()
-    entries = [
-        walkmesh.build_plane(p["key"], p["polygons"], p["top"], sources=p["sources"])
-        for p in walkmesh.planes_from_package(pkg, keys)
-    ]
-    return entries, time.perf_counter() - t
+def pct(xs, p):
+    xs = sorted(xs)
+    return xs[min(len(xs) - 1, int(round(p / 100 * (len(xs) - 1))))]
 
 
-def sizes(entries):
-    raw = json.dumps(entries, ensure_ascii=False, separators=(",", ":")).encode("utf8")
-    return len(raw), len(gzip.compress(raw))
-
-
-def far_pair(r: walkmesh.MeshRouter, pi: int, idx: MapIndex):
-    """면을 비스듬히 가로지르는 쌍: 축 좌표 (a+b) 가 작은 쪽·큰 쪽 가운데 꼭짓점 가운데 지금 색인도 면에 붙이는 것."""
-    P = r.planes[pi]
-    cs = sorted((v for v in P.adj if v >= P._nc), key=lambda v: sum(P.local(*P.vertex(v)[:2])))
-
-    def ok(v):
-        return idx.route_points(P.vertex(v), P.vertex(v), "shortest")[1][0]["attached"] == "surface"
-
-    lo = next(v for v in cs if ok(v))
-    hi = next(v for v in reversed(cs) if ok(v))
-    return P.vertex(lo), P.vertex(hi)
-
-
-def main(path):
+def main(path, structures=None):
     pkg = json.load(open(path, encoding="utf8"))
-    print(f"꾸러미 {path}: {len(json.dumps(pkg, ensure_ascii=False).encode('utf8')) / 1024:.0f} KB")
-    t = time.perf_counter()
+    old = copy.deepcopy(pkg)
+    old.pop("walkMeshes", None)
+    if not pkg.get("walkMeshes"):
+        st = indicators.load_structures(structures) if structures else None
+        t = time.perf_counter()
+        pkg["walkMeshes"] = walkmesh.build_entries(pkg, st)
+        print(f"그물 항목 만들기(가져올 때) {time.perf_counter() - t:.1f} s")
+    es = pkg["walkMeshes"]
+    raw = json.dumps(es, ensure_ascii=False, separators=(",", ":")).encode("utf8")
+    print(
+        f"walkMeshes {len(es)}개(면 {sum(e['kind'] == 'surface' for e in es)}, 길 띠 {sum(e['kind'] == 'band' for e in es)}), "
+        f"{len(raw) / 1024:.0f} KB (gzip {len(gzip.compress(raw)) / 1024:.0f} KB); "
+        f"칸 크기별 {dict(sorted({c: sum(e['cell'] == c for e in es) for c in {e['cell'] for e in es}}.items()))}"
+    )
     idx = MapIndex(pkg)
-    print(f"지금 색인 만들기 {time.perf_counter() - t:.2f} s")
-
-    print("\n== 시제품 구역 ==")
-    for name, keys in PROTO.items():
-        entries, bt = build(pkg, keys)
-        r = walkmesh.MeshRouter(idx, entries)
-        for pi, (e, P) in enumerate(zip(entries, r.planes)):
-            raw, gz = sizes([e])
-            print(
-                f"{name} {e['key']} ({'+'.join(e['sources'])}): 칸 {e['cell']} m, {e['cols']}×{e['rows']}, "
-                f"덮음 {e['cover']:.0%}, 꼭짓점 {len(P.adj)}, 간선 {sum(map(len, P.adj.values())) // 2}, "
-                f"항목 {raw} B (gzip {gz} B), 만들기 {bt * 1000:.0f} ms"
-            )
-            a, b = far_pair(r, pi, idx)
-            for mode in ("shortest", "nightSafe"):
-                cur, _ = idx.route_points(a, b, mode)
-                t = time.perf_counter()
-                new = r.route_points(a, b, mode)
-                dt = (time.perf_counter() - t) * 1000
-                straight = math.dist(a, b)
-                print(
-                    f"   {mode}: 직선 {straight:.1f} m | 지금 {cur['distanceM'] if cur else None} m "
-                    f"(선 점 {len(cur['geometry']) if cur else 0}) | 그물 {new['distanceM'] if new else None} m "
-                    f"(선 점 {len(new['geometry']) if new else 0}, 꼭짓점 {new['meshVertices'] if new else 0}, "
-                    f"방문 {new['visited'] if new else 0}, {dt:.0f} ms)"
-                )
-
-    print("\n== 캠퍼스 전체(걷는 면 84 + 열린 면 5) ==")
-    entries, bt = build(pkg)
     t = time.perf_counter()
-    r = walkmesh.MeshRouter(idx, entries)
-    rt = time.perf_counter() - t
-    raw, gz = sizes(entries)
-    nv = sum(len(P.adj) for P in r.planes)
-    ne = sum(sum(map(len, P.adj.values())) // 2 for P in r.planes)
-    cells = sum(e["cols"] * e["rows"] for e in entries)
-    tris = sum(bin(c).count("1") for P in r.planes for c in P.codes)
-    by_cell = {c: sum(e["cell"] == c for e in entries) for c in sorted({e["cell"] for e in entries})}
+    r = idx.mesh
     print(
-        f"면 {len(entries)} (칸 크기별 {by_cell}), 격자 칸 {cells}, 세모 {tris}, 꼭짓점 {nv}, 간선 {ne}, "
-        f"잇는 간선 {sum(map(len, r.links.values())) // 2}, 노드 붙임 {sum(len(v) for k, v in r.attach.items() if isinstance(k, str))}"
+        f"그물 색인 {time.perf_counter() - t:.2f} s: 꼭짓점 {sum(sum(1 for a in M.adj if a) for M in r.meshes)}, "
+        f"간선 {sum(len(M.ea) for M in r.meshes)}, 이음 {len(r.links)}(대표 {len(r.seam_links)}), "
+        f"관문 {len(r.gref)}, 추상 간선 {sum(len(a) for a in r.aadj)}"
     )
-    print(f"walkMeshes {raw / 1024:.1f} KB (gzip {gz / 1024:.1f} KB), 만들기 {bt:.1f} s, 그물 색인 {rt:.1f} s")
-    low = sorted(entries, key=lambda e: e["cover"])[:5]
-    print("덮음 낮은 면:", ", ".join(f"{e['key']} {e['cover']:.0%}" for e in low))
-
-    outdoor = [n for n in pkg["nodes"] if n["location"] == "outdoor" and r.attach.get(n["key"])]
-    rng = random.Random(7)
-    rows = []
-    for _ in range(30):
-        a, b = rng.sample(outdoor, 2)
-        t = time.perf_counter()
-        cur = idx.route(a["key"], b["key"], "shortest")
-        ct = (time.perf_counter() - t) * 1000
-        t = time.perf_counter()
-        new = r.route_points(a["key"], b["key"], "shortest")
-        nt = (time.perf_counter() - t) * 1000
-        rows.append(
-            (cur and cur["distanceM"], new and new["distanceM"], ct, nt, new and new["visited"], a["key"], b["key"])
-        )
-    both = [x for x in rows if x[0] and x[1]]
-    ratio = sorted(x[1] / x[0] for x in both)
+    oidx = MapIndex(old)
+    nodes = [n for n in pkg["nodes"] if n["location"] == "outdoor"] + [
+        n for n in pkg["nodes"] if n["location"] != "outdoor"
+    ]
+    rnd = random.Random(7)
+    pairs = []
+    for _ in range(150):
+        a, b = rnd.sample(nodes, 2)
+        pairs.append((a["key"], b["key"]))
+    # 면 위 아무 점(그물 세모 가운데) 쌍
+    cents = []
+    for mi, M in enumerate(r.meshes):
+        if M.kind != "surface":
+            continue
+        for k in range(0, len(M.codes), 7):
+            if M.codes[k] == 15:
+                cents.append(M.xyz(M.nc + k))
+    for _ in range(150):
+        a, b = rnd.sample(cents, 2)
+        pairs.append((tuple(round(c, 2) for c in a), tuple(round(c, 2) for c in b)))
+    times, ratios, nores, worse = {m: [] for m in MODES}, [], 0, []
+    for a, b in pairs:
+        for m in MODES:
+            t = time.perf_counter()
+            out, _ = idx.route_points(a, b, m)
+            times[m].append((time.perf_counter() - t) * 1000)
+            if m == "shortest":
+                cur, _ = oidx.route_points(a, b, m)
+                if out is None:
+                    if cur is not None:
+                        nores += 1
+                        print("  그물 길 없음:", a, b, m)
+                elif cur:
+                    ratios.append((out["distanceM"] / cur["distanceM"] if cur["distanceM"] else 1.0, a, b, cur, out))
+    allt = [x for v in times.values() for x in v]
     print(
-        f"면 위 노드 무작위 30쌍(최단): 둘 다 경로 {len(both)}, 지금만 {sum(1 for x in rows if x[0] and not x[1])}, "
-        f"그물만 {sum(1 for x in rows if x[1] and not x[0])}"
+        f"\n경로 {len(pairs)}쌍 × 7방식: p50 {pct(allt, 50):.1f} ms, p95 {pct(allt, 95):.1f} ms, 최대 {max(allt):.1f} ms"
     )
-    if ratio:
-        print(
-            f"  그물/지금 거리 비: 최소 {ratio[0]:.3f}, 가운데 {ratio[len(ratio) // 2]:.3f}, 최대 {ratio[-1]:.3f}; "
-            f"시간 지금 가운데 {sorted(x[2] for x in rows)[15]:.0f} ms, 그물 가운데 {sorted(x[3] for x in rows)[15]:.0f} ms "
-            f"최대 {max(x[3] for x in rows):.0f} ms, 방문 최대 {max((x[4] or 0) for x in rows)}"
-        )
-    for x in sorted(both, key=lambda x: x[1] / x[0])[:3]:
-        print(f"  차이 큰 쌍 {x[5]} → {x[6]}: 지금 {x[0]} m, 그물 {x[1]} m")
+    for m in MODES:
+        print(f"  {m}: p50 {pct(times[m], 50):.1f}, p95 {pct(times[m], 95):.1f}, 최대 {max(times[m]):.1f} ms")
+    rs = [x[0] for x in ratios]
+    print(
+        f"최단 거리 그물/지금: 가운데 {statistics.median(rs):.3f}, 범위 {min(rs):.3f}~{max(rs):.3f}; "
+        f"지금은 길이 있는데 그물은 없음 {nores}"
+    )
+    for rt, a, b, cur, out in sorted(ratios, key=lambda x: x[0])[:5]:
+        print(f"  짧아짐 {rt:.3f}: {a} → {b}: {cur['distanceM']} → {out['distanceM']} m")
+    for rt, a, b, cur, out in sorted(ratios, key=lambda x: x[0])[-8:]:
+        print(f"  길어짐 {rt:.3f}: {a} → {b}: {cur['distanceM']} → {out['distanceM']} m")
+    _ = math, worse
 
 
 if __name__ == "__main__":
-    main(sys.argv[1])
+    main(*sys.argv[1:])

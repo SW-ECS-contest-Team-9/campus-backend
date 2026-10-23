@@ -215,6 +215,16 @@ class MapIndex:
             self.out[e["to"]].append((e, e["from"]))
         # 지표: 꾸러미에 있으면 그대로, 없으면(옛 꾸러미·열린 면 가상 간선) 길 선으로 계산
         self.ind = {k: self._indicators(e, self.nodes) for k, e in self.edges.items()}
+        self._mesh = None
+
+    @property
+    def mesh(self):
+        """보행 그물 길찾기(꾸러미에 walkMeshes 가 있을 때). 처음 쓸 때 만든다(관문 표 계산)."""
+        if self._mesh is None and self.pkg.get("walkMeshes"):
+            from mapdata.walkmesh import MeshRouter
+
+            self._mesh = MeshRouter(self, self.pkg["walkMeshes"])
+        return self._mesh
 
     def _indicators(self, e: dict, nodes: dict) -> dict:
         i = e.get("indicators")
@@ -342,7 +352,10 @@ class MapIndex:
         """출발·도착이 노드 key 또는 점 (x, y, z). 열린 면·기단 면 위 점은 임시 노드(q:from, q:to)로 넣어
         그 면의 노드와 같은 면 규칙으로 잇는다(면 안에 노드가 없는 넓은 면도 쓸 수 있게). 면 위가 아니거나
         이을 노드가 없으면 25 m·높이 차 2 m 안 가장 가까운 노드. 공유하는 색인은 바꾸지 않는다.
-        반환: (경로 또는 None, [출발, 도착] 붙인 결과 {nodeKey, attached: node|surface|nearest_node, areas} 또는 None)."""
+        반환: (경로 또는 None, [출발, 도착] 붙인 결과 {nodeKey, attached: node|surface|nearest_node, areas} 또는 None).
+        꾸러미에 보행 그물(walkMeshes)이 있으면 그물 길찾기(walkmesh.MeshRouter)로 한다."""
+        if self.mesh is not None:
+            return self.mesh.route_points(start, goal, mode)
         tmp_nodes, tmp_edges, ends = {}, [], []
         for key, spec in (("q:from", start), ("q:to", goal)):
             if isinstance(spec, str):
