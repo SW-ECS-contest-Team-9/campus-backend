@@ -475,3 +475,14 @@ def test_no_seam_where_surfaces_meet_with_a_step():
     out, links = _two_surfaces(100.0, step)
     nodes, links2, rep = surfaces.seam_nodes(out, links, [])
     assert nodes == [] and links2 == links and rep["seamNodes"] == 0
+
+
+def test_validate_counts_surface_crossings_as_connected():
+    s = _src()
+    s["roads"] = [
+        road("r1", "a", "b", [[1, 1, 100.1], [19, 1, 101.9]]),
+        road("r2", "c", "d", [[1, 19, 100.1], [5, 19, 100.5]]),
+    ]
+    c, _ = transform.build(s)
+    p = {**c, "places": [], "floors": [], "buildings": []}
+    assert release.validate(p)["components"] == [4]  # 두 길이 면 가로지르기로 한 덩어리

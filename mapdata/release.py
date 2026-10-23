@@ -9,7 +9,7 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
-from mapdata.routing import MODE_SPEC
+from mapdata.routing import MODE_SPEC, MapIndex
 
 SCHEMA_VERSION = 1
 CAMPUS = {"code": "skuniv", "name": "서경대학교", "crs": 5186}
@@ -390,7 +390,12 @@ def validate(pkg: dict) -> dict:
     for p in pkg["places"]:
         if p["nodeKey"] and p["nodeKey"] not in nodes:
             errors.append(f"장소가 없는 노드에 붙음: {p['key']}")
-    # 이어진 덩어리
+    # 이어진 덩어리: 열린 면·걷는 면 가로지르기(읽을 때 만드는 가상 간선)도 이음으로 본다
+    if not errors:
+        for e in MapIndex(pkg).edges.values():
+            if e["kind"] == "open_area":
+                adj[e["from"]].add(e["to"])
+                adj[e["to"]].add(e["from"])
     seen, comps = set(), []
     for k in nodes:
         if k in seen:
