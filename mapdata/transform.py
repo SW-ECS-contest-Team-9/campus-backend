@@ -7,10 +7,14 @@ import math
 import re
 from collections import Counter, defaultdict
 
+from mapdata import indicators, surfaces
+
 FLOOR_TOL_M = 1.5  # 높이로 층을 정할 때 허용 차
 PLACE_DZ_M = 2.0  # 장소-노드 높이 차 한도
 PLACE_RADIUS_M = 25.0  # 장소-노드 평면 거리 한도
 COORD_TOL_M = 0.05
+AREA_DZ_M = 0.5  # 열린 면 높이와 노드 높이 차 한도: 넘으면 다른 단(사이는 벽)
+AREA_EDGE_TOL_M = 0.5  # 면 경계 밖으로 이만큼까지는 면 위 노드로 본다
 
 KIND_BY_STRUCTURE = {
     "indoor_corridor": "corridor",
@@ -85,6 +89,15 @@ def point_in_poly(x, y, poly) -> bool:
     return inside
 
 
+def dist_to_ring(x, y, poly) -> float:
+    best = math.inf
+    for (x1, y1), (x2, y2) in zip(poly, poly[1:] + poly[:1]):
+        dx, dy = x2 - x1, y2 - y1
+        t = max(0.0, min(1.0, ((x - x1) * dx + (y - y1) * dy) / (dx * dx + dy * dy))) if dx or dy else 0.0
+        best = min(best, math.hypot(x - x1 - t * dx, y - y1 - t * dy))
+    return best
+
+
 def _to_5186():
     from pyproj import Transformer
 
@@ -121,9 +134,10 @@ def build(src: dict) -> tuple[dict, dict]:
     floor_by_bld: dict[str, list[dict]] = defaultdict(list)
     for name, parts in sorted(groups.items()):
         main = next((p for p in parts if scene_names[p["id"]] == p["id"] or p.get("name") == name), parts[0])
-        rings = []
+        rings, roofs = [], []
         for p in parts:
             for ring in p["rings_lonlat"]:
+                roofs.append(p.get("roof_m"))
                 xs, ys = tr.transform([c[0] for c in ring], [c[1] for c in ring])
                 pts = [[round(x, 2), round(y, 2)] for x, y in zip(xs, ys)]
                 if len(pts) > 1 and pts[0] == pts[-1]:
@@ -170,6 +184,8 @@ def build(src: dict) -> tuple[dict, dict]:
                 "footprint": foot,
                 "_ground": main.get("ground_floors") or (len(codes) - under if codes else None),
                 "_under": under if codes else None,
+                "_rings": rings,
+                "_roofs": roofs,
             }
         )
     bld_keys = {b["key"] for b in buildings}
@@ -199,7 +215,7 @@ def build(src: dict) -> tuple[dict, dict]:
         if length < 0.01 or len(coords) < 2:
             fix("zero_length_dropped", r["id"])
             continue
-        if r["road_class"] == "vehicle" and r["structure"] in ("ordinary", None):
+        if r["road_class"] in ("vehicle", "shared") and r["structure"] in ("ordinary", "ramp", None):
             kind = "vehicle_road"
         else:
             kind = KIND_BY_STRUCTURE.get(r["structure"], "walkway")
@@ -400,10 +416,48 @@ def build(src: dict) -> tuple[dict, dict]:
         for n in nodes:
             if (
                 n["location"] == "outdoor"
-                and point_in_poly(n["x"], n["y"], poly)
-                and (a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= PLACE_DZ_M)
+                and (point_in_poly(n["x"], n["y"], poly) or dist_to_ring(n["x"], n["y"], poly) <= AREA_EDGE_TOL_M)
+                and (a["elevation_m"] is None or abs(n["z"] - a["elevation_m"]) <= AREA_DZ_M)
             ):
                 area_nodes.append({"areaKey": ak, "nodeKey": n["key"]})
+
+    # ---- 기단 면(사람이 다니는 곳 외곽 안, 구조물 기단에서) ----
+    walk, structs = src.get("walkable"), src.get("structures")
+    surf, surf_nodes, surf_rep = [], [], None
+    if walk and structs:
+        surf, surf_nodes, surf_rep = surfaces.build(
+            structs.get("platforms", []),
+            structs.get("solids", []),
+            walk["outline"],
+            [r for b in buildings for r in b.get("_rings") or []],
+            walk.get("zones", []),
+            nodes,
+            [z for b in buildings for z in b.get("_roofs") or [None] * len(b.get("_rings") or [])],
+        )
+        surf_rep["walkableFile"] = walk.get("file")
+        # 길이 면 경계를 지나는 곳에 노드(면 안에 노드가 없는 넓은 면도 길과 이어지게)
+        before = {n["key"] for n in nodes}
+        nodes, edges, surf_nodes, split_rep = surfaces.split_edges(surf, surf_nodes, nodes, edges)
+        surf_rep.update(split_rep)
+        # 같은 높이로 맞닿은 면 사이 이음 노드(기단 조각이 달라도 한 바닥이면 이어지게)
+        seams, surf_nodes, seam_rep = surfaces.seam_nodes(surf, surf_nodes, nodes)
+        nodes = nodes + seams
+        surf_rep.update(seam_rep)
+        for n in nodes:
+            if n["key"] in before:
+                continue
+            for a in areas:
+                if (
+                    a["z"] is not None
+                    and abs(n["z"] - a["z"]) <= AREA_DZ_M
+                    and (
+                        point_in_poly(n["x"], n["y"], a["polygon"])
+                        or dist_to_ring(n["x"], n["y"], a["polygon"]) <= AREA_EDGE_TOL_M
+                    )
+                ):
+                    area_nodes.append({"areaKey": a["key"], "nodeKey": n["key"]})
+    elif walk:
+        unf("walkable_without_structures", "걷는 곳 외곽은 있는데 구조물이 없어 기단 면을 못 만듦")
 
     content = {
         "buildings": buildings,
@@ -413,7 +467,12 @@ def build(src: dict) -> tuple[dict, dict]:
         "places": places,
         "walkAreas": areas,
         "walkAreaNodes": area_nodes,
+        "walkSurfaces": surf,
+        "walkSurfaceNodes": surf_nodes,
     }
+    rep["surfaces"] = surf_rep
+    rep["indicators"] = indicators.annotate(content, structs)
+    rep["indicators"]["structureFiles"] = structs.get("files") if structs else None
     rep["counts"] = {k: len(v) for k, v in content.items()}
     rep["fixed"] = dict(rep["fixed"])
     rep["unfixed"] = dict(rep["unfixed"])

@@ -44,6 +44,19 @@ services:
       - "${API_BIND:-0.0.0.0}:${API_PORT:-8010}:8010"
     volumes:
       - releases:/data/releases
+      # 걷는 면(walkSurfaces) 원천. 읽기 전용. 경로가 없으면 Linux 도커는 up 이 멈추고, Docker Desktop 은 빈 폴더를 붙임(import-release.sh 가 막음).
+      - type: bind
+        source: ${STRUCTURES_DIR:-../../CampusTracker-Server/frontend/public/structures}
+        target: /srv/structures
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${WALKABLE_GEOJSON:-../mapdata/data/walkable-areas-5186.geojson}
+        target: /srv/walkable-areas-5186.geojson
+        read_only: true
+        bind:
+          create_host_path: false
     restart: unless-stopped
 
 volumes:

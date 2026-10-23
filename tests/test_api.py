@@ -134,3 +134,36 @@ def test_route_xyz_and_errors(client, published):
 def test_cors(client, published):
     r = client.get("/v1/map/releases/latest", headers={"Origin": "http://localhost:8081"})
     assert r.headers["access-control-allow-origin"] == "http://localhost:8081"
+
+
+def test_route_all_modes_with_summary(client, published):
+    for mode in ("fastest", "accessible", "rainProtected", "nightSafe"):
+        r = client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": mode})
+        assert r.status_code == 200, mode
+        body = r.json()
+        assert body["mode"] == mode and {"climbM", "steps", "rainExposedM", "wheelchair"} <= set(body["summary"])
+    r = client.get("/v1/routes", params={"from": "p:p_gate", "to": "p:p_room", "mode": "accessible"}).json()
+    assert "stairs" not in [s["kind"] for s in r["steps"]] and r["note"]
+
+
+def test_route_from_point_on_walk_surface(client, clean):
+    # 걷는 면(구조물 기단 + 걷는 곳 외곽)이 있는 릴리스: 면 위 점에서 바로 출발
+    from test_surfaces import _src
+
+    c, rep = transform.build(_src())
+    rid = release.create_draft(clean, c, rep, {"label": "surface"})
+    clean.commit()
+    release.publish(clean, rid)
+    clean.commit()
+    r = client.get("/v1/routes", params={"from": "10,10,101", "to": "19,19,101.9"})
+    assert r.status_code == 200
+    body = r.json()
+    assert body["from"]["type"] == "point" and body["from"]["attached"] == "surface"
+    assert body["from"]["nodeKey"] == "q:from" and body["steps"][0]["kind"] == "open_area"
+    assert body["to"]["attached"] == "node"  # 도착 점이 노드 c 자리
+
+
+def test_route_modes_spec(client):
+    spec = client.get("/v1/route-modes").json()
+    assert spec["modes"]["rainProtected"]["exposure"] == {"rain": 2.0}
+    assert spec["modes"]["accessible"]["exclude"] == ["stairs", "wheelchairNo"]

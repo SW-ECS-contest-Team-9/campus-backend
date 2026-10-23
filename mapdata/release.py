@@ -9,6 +9,8 @@ from pathlib import Path
 
 from psycopg.types.json import Jsonb
 
+from mapdata.routing import MODE_SPEC, MapIndex
+
 SCHEMA_VERSION = 1
 CAMPUS = {"code": "skuniv", "name": "서경대학교", "crs": 5186}
 EDGE_KINDS = {"walkway", "sidewalk", "crossing", "corridor", "stairs", "ramp", "elevator", "vehicle_road"}
@@ -73,8 +75,8 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
             ).fetchone()["id"]
         for n in content["nodes"]:
             nid[n["key"]] = conn.execute(
-                "INSERT INTO node (release_id, key, location, building_id, floor_id, kind, x, y, z, estimated)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                "INSERT INTO node (release_id, key, location, building_id, floor_id, kind, x, y, z, estimated, indicators)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
                 (
                     rid,
                     n["key"],
@@ -86,13 +88,14 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                     n["y"],
                     n["z"],
                     n["estimated"],
+                    _json(n.get("indicators")),
                 ),
             ).fetchone()["id"]
         with conn.cursor() as cur:
             cur.executemany(
                 "INSERT INTO edge (release_id, key, from_node_id, to_node_id, name, kind, direction, pedestrian_access,"
-                " wheelchair_access, length_m, step_count, width_m, geometry, estimated)"
-                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                " wheelchair_access, length_m, step_count, width_m, geometry, estimated, indicators)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
                 [
                     (
                         rid,
@@ -109,6 +112,7 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                         e["widthM"],
                         Jsonb(e["geometry"]),
                         e["estimated"],
+                        _json(e.get("indicators")),
                     )
                     for e in content["edges"]
                 ],
@@ -155,7 +159,32 @@ def create_draft(conn, content: dict, report: dict, source: dict) -> int:
                 "INSERT INTO walk_area_node (area_id, node_id) VALUES (%s, %s)",
                 [(aid[w["areaKey"]], nid[w["nodeKey"]]) for w in content["walkAreaNodes"]],
             )
+        sid = {}
+        for s in content.get("walkSurfaces", []):
+            sid[s["key"]] = conn.execute(
+                "INSERT INTO walk_surface (release_id, key, name, material, top, polygons, platforms, estimated)"
+                " VALUES (%s,%s,%s,%s,%s,%s,%s,%s) RETURNING id",
+                (
+                    rid,
+                    s["key"],
+                    s["name"],
+                    s["material"],
+                    Jsonb(s["top"]),
+                    Jsonb(s["polygons"]),
+                    Jsonb(s["platforms"]),
+                    s["estimated"],
+                ),
+            ).fetchone()["id"]
+        with conn.cursor() as cur:
+            cur.executemany(
+                "INSERT INTO walk_surface_node (surface_id, node_id) VALUES (%s, %s)",
+                [(sid[w["surfaceKey"]], nid[w["nodeKey"]]) for w in content.get("walkSurfaceNodes", [])],
+            )
     return rid
+
+
+def _json(v):
+    return None if v is None else Jsonb(v)
 
 
 # ---------- DB → 꾸러미 ----------
@@ -172,6 +201,7 @@ def build_package(conn, rid: int) -> dict:
     fk = {r["id"]: r["key"] for r in q("SELECT id, key FROM floor WHERE release_id = %s")}
     nk = {r["id"]: r["key"] for r in q("SELECT id, key FROM node WHERE release_id = %s")}
     ak = {r["id"]: r["key"] for r in q("SELECT id, key FROM walk_area WHERE release_id = %s")}
+    sk = {r["id"]: r["key"] for r in q("SELECT id, key FROM walk_surface WHERE release_id = %s")}
     src = rel["source"] or {}
     pkg = {
         "schemaVersion": rel["schema_version"],
@@ -213,6 +243,7 @@ def build_package(conn, rid: int) -> dict:
                 "y": _f(r["y"]),
                 "z": _f(r["z"]),
                 "estimated": r["estimated"],
+                **({"indicators": r["indicators"]} if r["indicators"] is not None else {}),
             }
             for r in q("SELECT * FROM node WHERE release_id = %s ORDER BY key")
         ],
@@ -231,6 +262,7 @@ def build_package(conn, rid: int) -> dict:
                 "widthM": _f(r["width_m"]),
                 "geometry": r["geometry"],
                 "estimated": r["estimated"],
+                **({"indicators": r["indicators"]} if r["indicators"] is not None else {}),
             }
             for r in q("SELECT * FROM edge WHERE release_id = %s ORDER BY key")
         ],
@@ -272,6 +304,31 @@ def build_package(conn, rid: int) -> dict:
             ),
             key=lambda w: (w["areaKey"], w["nodeKey"]),
         ),
+        # 기단 면(기울어진 면 포함). 같은 면 위 노드끼리 면 안에 머무는 직선으로 잇는다. 선택 칸.
+        "walkSurfaces": [
+            {
+                "key": r["key"],
+                "name": r["name"],
+                "material": r["material"],
+                "top": r["top"],
+                "polygons": r["polygons"],
+                "platforms": r["platforms"],
+                "estimated": r["estimated"],
+            }
+            for r in q("SELECT * FROM walk_surface WHERE release_id = %s ORDER BY key")
+        ],
+        "walkSurfaceNodes": sorted(
+            (
+                {"surfaceKey": sk[r["surface_id"]], "nodeKey": nk[r["node_id"]]}
+                for r in q(
+                    "SELECT wsn.* FROM walk_surface_node wsn JOIN walk_surface s ON s.id = wsn.surface_id"
+                    " WHERE s.release_id = %s"
+                )
+            ),
+            key=lambda w: (w["surfaceKey"], w["nodeKey"]),
+        ),
+        # 경로 방식별 비용 규칙(앱이 기기 안에서 같은 규칙으로 길을 찾도록). 선택 칸.
+        "routeModes": MODE_SPEC,
     }
     return pkg
 
@@ -282,8 +339,8 @@ def validate(pkg: dict) -> dict:
     nodes = {n["key"]: n for n in pkg["nodes"]}
     floors = {f["key"]: f for f in pkg["floors"]}
     builds = {b["key"] for b in pkg["buildings"]}
-    for name in ("buildings", "floors", "nodes", "edges", "places", "walkAreas"):
-        keys = [x["key"] for x in pkg[name]]
+    for name in ("buildings", "floors", "nodes", "edges", "places", "walkAreas", "walkSurfaces"):
+        keys = [x["key"] for x in pkg.get(name, [])]
         if len(keys) != len(set(keys)):
             errors.append(f"{name}: key 중복")
     for n in pkg["nodes"]:
@@ -324,10 +381,21 @@ def validate(pkg: dict) -> dict:
             cross.append(f"{e['key']} {floors[a['floorKey']]['code']}→{floors[b['floorKey']]['code']} ({e['kind']})")
         adj[e["from"]].add(e["to"])
         adj[e["to"]].add(e["from"])
+    skeys = {s["key"] for s in pkg.get("walkSurfaces", [])}
+    for w in pkg.get("walkSurfaceNodes", []):
+        if w["surfaceKey"] not in skeys or w["nodeKey"] not in nodes:
+            errors.append(f"기단 면 노드 짝이 없는 것을 가리킴: {w}")
+        elif nodes[w["nodeKey"]]["location"] != "outdoor":
+            errors.append(f"기단 면에 실내 노드: {w}")
     for p in pkg["places"]:
         if p["nodeKey"] and p["nodeKey"] not in nodes:
             errors.append(f"장소가 없는 노드에 붙음: {p['key']}")
-    # 이어진 덩어리
+    # 이어진 덩어리: 열린 면·걷는 면 가로지르기(읽을 때 만드는 가상 간선)도 이음으로 본다
+    if not errors:
+        for e in MapIndex(pkg).edges.values():
+            if e["kind"] == "open_area":
+                adj[e["from"]].add(e["to"])
+                adj[e["to"]].add(e["from"])
     seen, comps = set(), []
     for k in nodes:
         if k in seen:

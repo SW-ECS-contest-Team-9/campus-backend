@@ -11,6 +11,7 @@ dependencies = [
     "pyproj>=3.8.0",
     "python-dotenv>=1.2.4",
     "redis>=8.1.0",
+    "shapely>=2.2.0",
     "sqlalchemy>=2.1.4",
     "uvicorn[standard]>=0.54.0",
 ]

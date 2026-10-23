@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from fixture_source import source
-from mapdata import release, sources, transform
+from fixture_source import road, source
+from mapdata import indicators, release, sources, transform
 
 
 def build():
@@ -101,3 +101,113 @@ def test_copy_unescape_literal_backslash():
     assert sources._unescape(r"A\\tB") == "A\\tB"
     assert sources._unescape(r"a\tb\nc") == "a\tb\nc"
     assert sources._unescape(r"C:\\\\x") == "C:\\\\x"
+
+
+def test_transform_vehicle_and_shared_roads_are_vehicle_road():
+    src = {
+        "roads": [
+            road("v1", "a", "b", [[0, 0, 100], [10, 0, 100]], road_class="vehicle", access="unknown"),
+            road("v2", "b", "c", [[10, 0, 100], [20, 0, 102]], "ramp", road_class="shared"),
+            road("p1", "c", "d", [[20, 0, 102], [30, 0, 102]], "ramp"),
+        ],
+        "node_levels": {},
+        "places": [],
+        "buildings": [],
+        "open_areas": [],
+    }
+    c, _ = transform.build(src)
+    kinds = {e["key"]: e["kind"] for e in c["edges"]}
+    assert kinds == {"e:v1": "vehicle_road", "e:v2": "vehicle_road", "e:p1": "ramp"}
+
+
+def test_transform_area_nodes_on_boundary_and_same_level_only():
+    src = {
+        "roads": [
+            road("r1", "edge", "in", [[0, 5, 100], [5, 5, 100]]),
+            road("r2", "in", "up", [[5, 5, 100], [6, 6, 101]], "stairs"),
+            road("r3", "up", "out", [[6, 6, 101], [30, 5, 101]]),
+        ],
+        "node_levels": {},
+        "places": [],
+        "buildings": [],
+        "open_areas": [
+            {
+                "id": "a1",
+                "name": "광장",
+                "kind": "plaza",
+                "elevation_m": 100.0,
+                "polygon": [[0, 0], [10, 0], [10, 10], [0, 10]],
+            }
+        ],
+    }
+    c, _ = transform.build(src)
+    assert {w["nodeKey"] for w in c["walkAreaNodes"]} == {"n:edge", "n:in"}  # 1 m 위 노드는 빠진다
+
+
+def test_transform_adds_indicators_and_coverage():
+    s = source()
+    s["structures"] = indicators.parse_structures(
+        [
+            {
+                "type": "Feature",
+                "properties": {"id": "C1", "kind": "extrude", "type": "canopy", "fromM": 103, "toM": 103.3},
+                "geometry": {"type": "Polygon", "coordinates": [[[0, -2], [10, -2], [10, 2], [0, 2], [0, -2]]]},
+            }
+        ]
+    )
+    c, rep = transform.build(s)
+    e = {x["key"]: x["indicators"] for x in c["edges"]}
+    assert e["e:r1"]["cover"] == "canopy"  # 앞길 0~10 m 가 차양 밑
+    # "중앙 계단 (8칸)" 인데 높이 차 4 m: 한 단 0.5 m 는 안 맞아 이름 값을 버리고 높이로 어림
+    assert e["e:r4"]["steps"] == 25 and e["e:r4"]["src"]["steps"] == "estimated"
+    assert e["e:r7"]["elevator"]["floors"] == ["1F", "2F"]
+    assert rep["indicators"]["fields"]["cover"]["pct"] == 100.0
+    c, rep = build()  # 구조물 없이도 기하 지표는 붙는다
+    assert all("walkS" in x["indicators"] for x in c["edges"])
+    assert rep["indicators"]["fields"]["cover"]["known"] < rep["indicators"]["fields"]["cover"]["total"]
+
+
+def test_package_carries_indicators_and_route_modes(clean):
+    c, rep = build()
+    rid = release.create_draft(clean, c, rep, {"label": "fixture"})
+    clean.commit()
+    pkg = release.build_package(clean, rid)
+    assert pkg["schemaVersion"] == 1  # 지표는 선택 칸: 옛 앱은 무시
+    e = {x["key"]: x for x in pkg["edges"]}
+    assert e["e:r4"]["indicators"]["steps"] == 25
+    assert "landmark" in {x["key"]: x for x in pkg["nodes"]}["n:o1"]["indicators"]
+    assert set(pkg["routeModes"]) >= {"shortest", "fastest", "avoidStairs", "accessible", "rainProtected", "nightSafe"}
+
+
+def _import_release_module():
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(
+        "import_release", Path(__file__).resolve().parent.parent / "scripts" / "import_release.py"
+    )
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_import_release_uses_default_surface_paths_when_they_exist(tmp_path, monkeypatch):
+    mod = _import_release_module()
+    (tmp_path / "structures").mkdir()
+    (tmp_path / "walk.geojson").write_text("{}", encoding="utf8")
+    monkeypatch.setattr(mod, "DEFAULT_STRUCTURES", tmp_path / "structures")
+    monkeypatch.setattr(mod, "DEFAULT_WALKABLE", tmp_path / "walk.geojson")
+    logs = []
+    assert mod.with_defaults(None, None, logs.append) == (str(tmp_path / "structures"), str(tmp_path / "walk.geojson"))
+    assert len(logs) == 2 and all("기본값 사용" in m for m in logs)
+    # 준 값은 그대로, 기본 경로가 없으면 비워 두고 알린다
+    monkeypatch.setattr(mod, "DEFAULT_WALKABLE", tmp_path / "none.geojson")
+    logs.clear()
+    assert mod.with_defaults("S", None, logs.append) == ("S", None)
+    assert len(logs) == 1 and "걷는 면 없이" in logs[0]
+
+
+def test_default_walkable_outline_is_in_repo():
+    # 배포 이미지·서버 체크아웃에 외곽이 있어야 걷는 면이 빠지지 않는다(git 밖 data/ 에 두지 않음)
+    mod = _import_release_module()
+    assert mod.DEFAULT_WALKABLE.is_file()
+    assert "data" not in mod.DEFAULT_WALKABLE.relative_to(mod.ROOT).parts[:1]

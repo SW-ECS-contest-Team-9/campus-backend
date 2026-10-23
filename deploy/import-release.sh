@@ -1,6 +1,7 @@
 #!/bin/sh
 # 지도 릴리스 가져오기 → 검증 오류가 없으면 공개. api 컨테이너 안에서 돈다.
-# 원천: 트래커 읽기 API(deploy/.env 의 TRACKER_API) + mobility SQL 내보내기(인자, 기본 /tmp/mobility.sql).
+# 원천: 트래커 읽기 API(deploy/.env 의 TRACKER_API) + mobility SQL 내보내기(인자, 기본 /tmp/mobility.sql)
+#       + 걷는 면 원천(compose 가 읽기 전용으로 붙임): /srv/structures(STRUCTURES_DIR), /srv/walkable-areas-5186.geojson(WALKABLE_GEOJSON).
 # 사용(저장소 루트 어디서든): deploy/import-release.sh [/tmp/mobility.sql]
 set -eu
 cd "$(dirname "$0")/.."
@@ -17,8 +18,13 @@ DC="docker compose -f deploy/compose.server.yml"
 set +e
 $DC exec -T api sh -c '
     f=/tmp/mobility-import.sql
+    S=/srv/structures W=/srv/walkable-areas-5186.geojson
+    if ! ls "$S"/*.geojson >/dev/null 2>&1 || [ ! -s "$W" ]; then
+        echo "걷는 면 원천이 없음($S 에 geojson, $W): deploy/.env 의 STRUCTURES_DIR·WALKABLE_GEOJSON 확인 뒤 up -d" >&2
+        exit 1
+    fi
     cat > "$f" &&
-    python scripts/import_release.py --api "$TRACKER_API" --export "$f" --publish
+    python scripts/import_release.py --api "$TRACKER_API" --export "$f" --structures "$S" --walkable "$W" --publish
     rc=$?
     rm -f "$f"
     exit $rc
