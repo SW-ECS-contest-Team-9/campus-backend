@@ -268,21 +268,26 @@ class Plane:
 def _links(planes: list[Plane]) -> list[tuple]:
     """같은 높이(차 STEP_OK_M 안)로 맞닿거나 겹친 두 면: 한 면의 경계 꼭짓점을 다른 면의 가까운 꼭짓점에 잇는다."""
     out = []
+    near = [P.region.buffer(CELL_M) for P in planes]
     for ai, A in enumerate(planes):
-        edge_band = None
+        rim = None  # A 의 경계 띠(칸 하나) 안 꼭짓점
         for bi, B in enumerate(planes):
-            gap = max(A.cell, B.cell)
-            if bi == ai or not _bbox_near(A.region.bounds, B.region.bounds, gap):
+            if (
+                bi == ai
+                or not _bbox_near(A.region.bounds, B.region.bounds, CELL_M)
+                or not near[ai].intersects(B.region)
+            ):
                 continue
-            if not A.region.buffer(gap).intersects(B.region):
-                continue
-            if edge_band is None:
-                edge_band = A.region.boundary.buffer(A.cell)
-                shapely.prepare(edge_band)
+            if rim is None:
+                band = A.region.boundary.buffer(A.cell)
+                vs = sorted(A.adj)
+                xy = np.array([A.vertex(v)[:2] for v in vs]).reshape(-1, 2)
+                rim = [v for v, ok in zip(vs, shapely.covers(band, shapely.points(xy))) if ok]
             r = LINK_CELLS * max(A.cell, B.cell)
-            for v in A.adj:
+            bb = B.region.bounds
+            for v in rim:
                 p = A.vertex(v)
-                if not edge_band.covers(Point(p[:2])):
+                if not _bbox_near(bb, (p[0], p[1], p[0], p[1]), r):
                     continue
                 best = None
                 for w in B.near_vertices(p[0], p[1], r):
