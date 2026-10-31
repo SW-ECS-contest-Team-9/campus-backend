@@ -4,7 +4,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 import errors
-from routers import data, health, maps
+from routers import advertisements, data, health, maps
 
 DEV_ORIGINS = (
     "http://localhost:8081,http://127.0.0.1:8081,http://localhost:19006,http://localhost:5173,http://127.0.0.1:5173"
@@ -19,6 +19,7 @@ app.add_middleware(
     expose_headers=["ETag"],
 )
 errors.install(app)
+app.include_router(advertisements.router)
 app.include_router(data.router)
 app.include_router(health.router)
 app.include_router(maps.router)

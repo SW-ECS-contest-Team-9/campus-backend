@@ -6,6 +6,7 @@ import database
 from conftest import alembic_cfg
 
 TABLES = {
+    "advertisements",
     "campus",
     "map_release",
     "building",
